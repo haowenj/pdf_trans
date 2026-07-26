@@ -3,7 +3,7 @@
 ## 目标
 
 构建一个最小化的 Python 命令行项目：接收一个 PDF 文件路径，将 PDF
-提交给本地部署的 MinerU 3.4.4 异步任务接口，下载并解压返回的 ZIP
+提交给指定地址的 MinerU 3.4.4 异步任务接口（默认使用本地服务），下载并解压返回的 ZIP
 压缩包到项目本地的 `data/` 目录，清洗生成的内容列表 JSON，并输出条目数量统计。
 
 本项目不生成 Markdown，不处理跨页段落或表格合并，不创建 Document IR，
@@ -11,14 +11,18 @@
 
 ## 命令行接口
 
-命令接受且只接受一个位置参数，即 PDF 路径：
+命令接受一个必填位置参数（PDF 路径）和一个可选的 MinerU 服务地址参数：
 
 ```bash
-python -m mineru_cleaner /absolute/or/relative/path/document.pdf
+python -m mineru_cleaner /absolute/or/relative/path/document.pdf \
+  --svr-url http://127.0.0.1:7100
 ```
 
 命令会检查路径存在、目标是普通文件，并且扩展名不区分大小写地为 `.pdf`。
-MinerU 服务地址固定为 `http://127.0.0.1:7100`。
+`--svr-url` 不传时默认为 `http://127.0.0.1:7100`。该值作为 MinerU API
+基础地址逐层传给工作流和 HTTP 客户端，不在请求逻辑中写死。这里的 `svr_url`
+是本程序连接 MinerU API 的地址，不是 MinerU 表单中供 HTTP 推理后端使用的
+`server_url` 字段。
 
 处理成功后输出：
 
@@ -31,7 +35,7 @@ MinerU 服务地址固定为 `http://127.0.0.1:7100`。
 
 ## MinerU 请求
 
-客户端通过 `POST /tasks` 上传 PDF，使用以下参数：
+客户端向 `svr_url` 对应服务的 `POST /tasks` 上传 PDF，使用以下表单参数：
 
 | 字段 | 值 |
 | --- | --- |

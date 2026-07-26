@@ -4,8 +4,9 @@
 >（推荐）或 `superpowers:executing-plans`，按任务逐项执行本计划。步骤使用
 > checkbox（`- [ ]`）跟踪。
 
-**Goal（目标）：** 构建一个最小化 Python 命令行程序，上传单个 PDF 到本地 MinerU
-3.4.4 异步接口，下载并安全解压结果 ZIP，清洗其中的 content list，并输出数量统计。
+**Goal（目标）：** 构建一个最小化 Python 命令行程序，上传单个 PDF 到指定地址的
+MinerU 3.4.4 异步接口（默认使用本地服务），下载并安全解压结果 ZIP，清洗其中的
+content list，并输出数量统计。
 
 **Architecture（架构）：** 以 `cleaner`、`archive`、`client`、`workflow` 和命令行入口五个职责边界
 组织代码。纯数据清洗与 ZIP 处理不依赖网络；MinerU 客户端通过注入 `httpx.Client`、
@@ -19,8 +20,12 @@
 
 ## Global Constraints（全局约束）
 
-- MinerU 版本为 3.4.4，默认地址固定为 `http://127.0.0.1:7100`。
-- 命令行只接收一个 PDF 文件路径，不提供 Web 接口或批量上传。
+- MinerU 版本为 3.4.4；服务地址通过 `svr_url` 传递，默认值为
+  `http://127.0.0.1:7100`，请求逻辑不得写死该地址。
+- `svr_url` 是本程序连接 MinerU API 的基础地址，不作为 MinerU multipart
+  表单中的 `server_url` 字段发送。
+- 命令行接收一个 PDF 文件路径，并提供可选参数 `--svr-url`；不提供 Web
+  接口或批量上传。
 - MinerU 参数固定为 `hybrid-engine`、`auto`、`medium`，启用公式、表格、content
   list、图片和 ZIP；关闭 Markdown、middle JSON 和 model output。
 - 仅删除 `header`、`footer`、`page_number`，以及 `text.strip()` 为空的 `text`。
@@ -40,9 +45,10 @@
 - `src/mineru_cleaner/errors.py`：项目内所有可预期错误的公共异常层级。
 - `src/mineru_cleaner/cleaner.py`：纯过滤规则、JSON 读写和统计数据。
 - `src/mineru_cleaner/archive.py`：ZIP 路径校验、解压和本次 content list 定位。
-- `src/mineru_cleaner/client.py`：MinerU 异步任务提交、轮询和结果下载。
-- `src/mineru_cleaner/workflow.py`：PDF 验证与完整处理流程编排。
-- `src/mineru_cleaner/__main__.py`：命令行参数、用户输出和退出码。
+- `src/mineru_cleaner/client.py`：使用传入的 `svr_url` 完成 MinerU 异步任务提交、
+  轮询和结果下载。
+- `src/mineru_cleaner/workflow.py`：PDF 验证、服务地址传递与完整处理流程编排。
+- `src/mineru_cleaner/__main__.py`：PDF 路径、`--svr-url`、用户输出和退出码。
 - `tests/test_cleaner.py`：清洗规则和字段保真测试。
 - `tests/test_archive.py`：安全解压和文件定位测试。
 - `tests/test_client.py`：MinerU HTTP 协议测试。
@@ -552,7 +558,8 @@ git commit -m "feat: safely extract MinerU results"
 
 **接口：**
 
-- 输入：PDF `Path`，可选注入的 `httpx.Client`、休眠函数和单调时钟。
+- 输入：`svr_url`、PDF `Path`，以及可选注入的 `httpx.Client`、休眠函数和
+  单调时钟。
 - 输出：`TaskSubmission`；`MinerUClient.parse_pdf(pdf_path) -> bytes`。
 - 后续任务依赖：工作流调用 `parse_pdf` 获得 ZIP 字节。
 
@@ -577,6 +584,7 @@ def test_parse_pdf_submits_polls_and_downloads_zip(tmp_path):
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal seen_post_body
         if request.method == "POST" and request.url.path == "/tasks":
+            assert str(request.url).startswith("http://mineru.example:7200/")
             seen_post_body = request.read()
             return httpx.Response(
                 202,
@@ -597,7 +605,11 @@ def test_parse_pdf_submits_polls_and_downloads_zip(tmp_path):
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
-    client = MinerUClient(http_client=http_client, sleep=lambda _: None)
+    client = MinerUClient(
+        svr_url="http://mineru.example:7200/",
+        http_client=http_client,
+        sleep=lambda _: None,
+    )
 
     result = client.parse_pdf(pdf)
 
@@ -771,7 +783,7 @@ import httpx
 
 from mineru_cleaner.errors import MinerUClientError
 
-BASE_URL = "http://127.0.0.1:7100"
+DEFAULT_SVR_URL = "http://127.0.0.1:7100"
 POLL_INTERVAL_SECONDS = 2.0
 TASK_TIMEOUT_SECONDS = 30 * 60
 
@@ -801,10 +813,12 @@ class MinerUClient:
     def __init__(
         self,
         *,
+        svr_url: str = DEFAULT_SVR_URL,
         http_client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
+        self._svr_url = svr_url.rstrip("/")
         self._owns_client = http_client is None
         self._http = http_client or httpx.Client(
             timeout=httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0),
@@ -832,7 +846,7 @@ class MinerUClient:
         try:
             with pdf_path.open("rb") as pdf_file:
                 response = self._http.post(
-                    f"{BASE_URL}/tasks",
+                    f"{self._svr_url}/tasks",
                     data=PARSE_FORM,
                     files={
                         "files": (
@@ -952,8 +966,9 @@ git commit -m "feat: call MinerU async task API"
 
 **接口：**
 
-- 输入：一个 PDF `Path`、可选 `data_dir` 和可选 MinerU 客户端。
-- 输出：`WorkflowResult`；`process_pdf(pdf_path, data_dir=None, client=None)`。
+- 输入：一个 PDF `Path`、`svr_url`、可选 `data_dir` 和可选 MinerU 客户端。
+- 输出：`WorkflowResult`；
+  `process_pdf(pdf_path, svr_url=DEFAULT_SVR_URL, data_dir=None, client=None)`。
 - 后续任务依赖：命令行入口调用 `process_pdf` 并展示其统计数据和输出路径。
 
 - [ ] **步骤 1：先编写工作流测试**
@@ -1029,6 +1044,36 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     ).read_bytes() == b"image"
 
 
+def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    archive_bytes = make_result_zip([{"type": "text", "text": "正文"}])
+    received = {}
+
+    class ContextClient:
+        def __init__(self, *, svr_url):
+            received["svr_url"] = svr_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def parse_pdf(self, pdf_path):
+            return archive_bytes
+
+    monkeypatch.setattr("mineru_cleaner.workflow.MinerUClient", ContextClient)
+
+    process_pdf(
+        pdf,
+        svr_url="http://mineru.internal:7200",
+        data_dir=tmp_path / "data",
+    )
+
+    assert received["svr_url"] == "http://mineru.internal:7200"
+
+
 @pytest.mark.parametrize(
     "filename, create_file",
     [
@@ -1069,7 +1114,7 @@ from typing import Protocol
 
 from mineru_cleaner.archive import extract_zip, find_content_list
 from mineru_cleaner.cleaner import clean_content_list_file
-from mineru_cleaner.client import MinerUClient
+from mineru_cleaner.client import DEFAULT_SVR_URL, MinerUClient
 from mineru_cleaner.errors import WorkflowError
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -1102,6 +1147,7 @@ def validate_pdf_path(pdf_path: Path) -> Path:
 def process_pdf(
     pdf_path: Path,
     *,
+    svr_url: str = DEFAULT_SVR_URL,
     data_dir: Path | None = None,
     client: PDFParser | None = None,
 ) -> WorkflowResult:
@@ -1109,7 +1155,7 @@ def process_pdf(
     output_root = (data_dir or DEFAULT_DATA_DIR).resolve()
 
     if client is None:
-        with MinerUClient() as mineru_client:
+        with MinerUClient(svr_url=svr_url) as mineru_client:
             archive_bytes = mineru_client.parse_pdf(resolved_pdf)
     else:
         archive_bytes = client.parse_pdf(resolved_pdf)
@@ -1135,7 +1181,7 @@ def process_pdf(
 pytest tests/test_workflow.py -v
 ```
 
-预期：3 个测试全部通过。
+预期：4 个测试全部通过。
 
 - [ ] **步骤 5：运行当前全部测试**
 
@@ -1145,7 +1191,7 @@ pytest tests/test_workflow.py -v
 pytest -v
 ```
 
-预期：19 个测试全部通过。
+预期：20 个测试全部通过。
 
 - [ ] **步骤 6：提交工作流**
 
@@ -1167,6 +1213,8 @@ git commit -m "feat: orchestrate PDF processing workflow"
 **接口：**
 
 - 输入：`main(argv: list[str] | None = None) -> int`。
+- 参数：必填 `pdf_path`；可选 `--svr-url`，默认
+  `http://127.0.0.1:7100`。
 - 输出：成功时向标准输出写入三项数量和结果路径并返回 0；可预期错误写入标准错误并返回 1。
 
 - [ ] **步骤 1：先编写命令行输出与错误测试**
@@ -1177,6 +1225,7 @@ git commit -m "feat: orchestrate PDF processing workflow"
 from pathlib import Path
 
 from mineru_cleaner import __main__ as cli
+from mineru_cleaner.client import DEFAULT_SVR_URL
 from mineru_cleaner.errors import WorkflowError
 from mineru_cleaner.workflow import WorkflowResult
 
@@ -1185,23 +1234,26 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
     output = tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
+    received = {}
 
-    monkeypatch.setattr(
-        cli,
-        "process_pdf",
-        lambda path: WorkflowResult(
+    def fake_process(path, *, svr_url):
+        received["path"] = path
+        received["svr_url"] = svr_url
+        return WorkflowResult(
             source_path=Path("paper_content_list.json"),
             output_path=output,
             before_count=10,
             filtered_count=3,
             after_count=7,
-        ),
-    )
+        )
+
+    monkeypatch.setattr(cli, "process_pdf", fake_process)
 
     exit_code = cli.main([str(pdf)])
 
     captured = capsys.readouterr()
     assert exit_code == 0
+    assert received == {"path": pdf, "svr_url": DEFAULT_SVR_URL}
     assert "处理前数量：10" in captured.out
     assert "过滤数量：3" in captured.out
     assert "处理后数量：7" in captured.out
@@ -1209,8 +1261,33 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     assert captured.err == ""
 
 
+def test_main_passes_custom_svr_url(tmp_path, monkeypatch):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    received = {}
+
+    def fake_process(path, *, svr_url):
+        received["svr_url"] = svr_url
+        return WorkflowResult(
+            source_path=Path("paper_content_list.json"),
+            output_path=Path("cleaned_content_list.json"),
+            before_count=1,
+            filtered_count=0,
+            after_count=1,
+        )
+
+    monkeypatch.setattr(cli, "process_pdf", fake_process)
+
+    exit_code = cli.main(
+        [str(pdf), "--svr-url", "http://mineru.example:7200"]
+    )
+
+    assert exit_code == 0
+    assert received["svr_url"] == "http://mineru.example:7200"
+
+
 def test_main_reports_expected_error(monkeypatch, capsys):
-    def fail(path):
+    def fail(path, *, svr_url):
         raise WorkflowError("PDF 文件不存在")
 
     monkeypatch.setattr(cli, "process_pdf", fail)
@@ -1246,6 +1323,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from mineru_cleaner.client import DEFAULT_SVR_URL
 from mineru_cleaner.errors import MinerUCleanerError
 from mineru_cleaner.workflow import process_pdf
 
@@ -1253,16 +1331,21 @@ from mineru_cleaner.workflow import process_pdf
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m mineru_cleaner",
-        description="使用本地 MinerU 解析 PDF 并清洗 content list。",
+        description="使用 MinerU 解析 PDF 并清洗 content list。",
     )
     parser.add_argument("pdf_path", type=Path, help="要解析的 PDF 文件路径")
+    parser.add_argument(
+        "--svr-url",
+        default=DEFAULT_SVR_URL,
+        help=f"MinerU API 服务地址（默认：{DEFAULT_SVR_URL}）",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        result = process_pdf(args.pdf_path)
+        result = process_pdf(args.pdf_path, svr_url=args.svr_url)
     except (MinerUCleanerError, OSError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1
@@ -1286,7 +1369,7 @@ if __name__ == "__main__":
 pytest tests/test_cli.py -v
 ```
 
-预期：2 个测试全部通过。
+预期：3 个测试全部通过。
 
 - [ ] **步骤 5：编写最小使用说明**
 
@@ -1295,13 +1378,13 @@ pytest tests/test_cli.py -v
 ````markdown
 # MinerU Content Cleaner
 
-上传一个 PDF 到本地 MinerU 3.4.4 异步接口，下载解析结果，并清洗其中的
+上传一个 PDF 到 MinerU 3.4.4 异步接口，下载解析结果，并清洗其中的
 content list。
 
 ## 环境
 
 - Python 3.11+
-- MinerU 3.4.4 服务运行在 `http://127.0.0.1:7100`
+- MinerU 3.4.4 服务；默认地址为 `http://127.0.0.1:7100`
 
 ## 安装
 
@@ -1315,6 +1398,13 @@ python -m pip install -e .
 
 ```bash
 python -m mineru_cleaner /path/to/document.pdf
+```
+
+连接其他地址的 MinerU：
+
+```bash
+python -m mineru_cleaner /path/to/document.pdf \
+  --svr-url http://mineru.example:7100
 ```
 
 MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 content list
@@ -1347,8 +1437,9 @@ pytest -v
 python -m mineru_cleaner --help
 ```
 
-预期：21 个测试全部通过；帮助输出包含
-`使用本地 MinerU 解析 PDF 并清洗 content list` 和位置参数 `pdf_path`。
+预期：23 个测试全部通过；帮助输出包含
+`使用 MinerU 解析 PDF 并清洗 content list`、位置参数 `pdf_path` 和
+可选参数 `--svr-url`。
 
 - [ ] **步骤 7：提交命令行和文档**
 
@@ -1382,7 +1473,7 @@ pytest -v
 git check-ignore -v data/example
 ```
 
-预期：`git diff --check` 无输出；21 个测试全部通过；最后一条命令显示
+预期：`git diff --check` 无输出；23 个测试全部通过；最后一条命令显示
 `.gitignore` 中的 `data/` 规则。
 
 - [ ] **步骤 2：确认本地 MinerU 3.4.4 健康**
