@@ -24,3 +24,11 @@ class WorkflowError(PDFTransError):
 
 class TranslationContentError(PDFTransError):
     """Raised when translation content cannot be read or written."""
+
+
+class TranslationConfigError(PDFTransError):
+    """Raised when translation environment configuration is incomplete."""
+
+
+class TranslationClientError(PDFTransError):
+    """Raised when one translation model call fails."""
