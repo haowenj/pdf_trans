@@ -2,7 +2,7 @@
 
 ## 目标
 
-将现有 sample 翻译升级为正式全量翻译。输入仍为
+将现有限量翻译升级为正式全量翻译。输入仍为
 `normalized_content_list.json`，输出仍为同目录下的
 `translated_content_list.json`。
 
