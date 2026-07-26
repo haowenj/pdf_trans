@@ -29,10 +29,18 @@ python -m mineru_cleaner /path/to/document.pdf \
   --svr-url http://mineru.example:7100
 ```
 
-MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 content list
-同目录的 `cleaned_content_list.json` 中，并自动在同目录生成 `rendered.md` 和
-`cross_page_candidates.json`。命令输出处理前数量、过滤数量、处理后数量、
-清洗结果路径、内容统计、Markdown 文件路径、跨页候选数量和报告路径。
+MinerU 结果解压到项目的 `data/` 目录，并按以下顺序生成处理结果：
+
+```text
+content_list.json
+  -> cleaned_content_list.json
+  -> cross_page_candidates.json（诊断报告）
+  -> normalized_content_list.json
+  -> rendered.md
+```
+
+命令输出处理前数量、过滤数量、处理后数量、清洗结果路径、内容统计、Markdown
+文件路径、跨页候选数量、候选报告路径、规范化后数量和规范化文件路径。
 
 程序只删除以下内容：
 
@@ -53,7 +61,7 @@ MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 con
 
 ## Markdown 渲染
 
-`rendered.md` 按清洗后数组的原顺序输出以下内容：
+`rendered.md` 按 `normalized_content_list.json` 数组的原顺序输出以下内容：
 
 - `text`：一级标题、二级标题或普通段落；
 - `ref_text`：原始参考文献段落；
@@ -62,7 +70,8 @@ MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 con
 - `equation`：MinerU 提供的原始 LaTeX 文本。
 
 各内容片段之间保留空行。渲染过程不会修改
-`cleaned_content_list.json`，也不会把 HTML 表格转换为 Markdown 表格。
+`cleaned_content_list.json`、`cross_page_candidates.json`，也不会把 HTML 表格转换为
+Markdown 表格。
 
 ## 跨页段落候选
 
@@ -70,8 +79,16 @@ MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 con
 当后一个 `page_idx` 等于前一个加 1，且前一个文本忽略尾部空白后不以
 `. ! ? : ;` 结尾时，记录为疑似跨页段落。
 
-报告包含两个对象的零基数组索引、两个页码、原始文本和判断原因。检测过程不会
-修改 `cleaned_content_list.json` 或 `rendered.md`，也不会自动合并正文。
+报告包含两个对象的零基数组索引、两个页码、原始文本和判断原因。候选检测和合并
+在同一次工作流中完成：合并步骤直接使用内存中的清洗数组和候选对象，不会重新读取
+`cross_page_candidates.json`。该 JSON 仍只作为诊断和人工检查报告。
+
+首尾相接的候选（例如 `0→1`、`1→2`）会构成一条链，按原始索引顺序合并为一个
+对象，只保留链首对象；多条互不相关的链分别处理。合并对象保留链首的原有字段和
+`page_idx`，并增加 `source_page_indices`、`source_bboxes` 与
+`merged_cross_page: true`。如果候选索引越界、不相邻，出现重复、分叉、汇聚或环，
+或者对象类型、页码不符合要求，工作流会终止并且不会写出
+`normalized_content_list.json`。
 
 ## 测试
 
