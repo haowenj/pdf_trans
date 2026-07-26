@@ -1,6 +1,6 @@
-# MinerU Content Cleaner
+# PDF Trans
 
-上传一个 PDF 到 MinerU 3.4.4 异步接口，下载解析结果，并清洗其中的
+上传一个 PDF 到 MinerU 3.4.4 异步接口，下载解析结果，清洗并 sample 翻译其中的
 content list。
 
 ## 环境
@@ -29,6 +29,16 @@ python -m pdf_trans /path/to/document.pdf \
   --svr-url http://mineru.example:7100
 ```
 
+配置 OpenAI 兼容翻译接口：
+
+```bash
+export TRANSLATION_BASE_URL="https://api.example.com/v1"
+export TRANSLATION_API_KEY="replace-with-api-key"
+export TRANSLATION_MODEL="paper-translation-model"
+```
+
+程序会在运行时读取这三个环境变量；缺少任意变量时命令会报错并停止。
+
 MinerU 结果解压到项目的 `data/` 目录，并按以下顺序生成处理结果：
 
 ```text
@@ -36,11 +46,13 @@ content_list.json
   -> cleaned_content_list.json
   -> cross_page_candidates.json（诊断报告）
   -> normalized_content_list.json
+  -> translated_content_list.json（sample：前 3 个 text）
   -> rendered.md
 ```
 
 命令输出处理前数量、过滤数量、处理后数量、清洗结果路径、内容统计、Markdown
-文件路径、跨页候选数量、候选报告路径、规范化后数量和规范化文件路径。
+文件路径、跨页候选数量、候选报告路径、规范化后数量、规范化文件路径，以及实际翻译
+对象数量、成功数量、失败数量、pending 数量和翻译文件路径。
 
 程序只删除以下内容：
 
@@ -58,6 +70,28 @@ content_list.json
 - 每个 `page_idx` 的元素数量。
 
 统计结果只输出到终端，不会写入 `cleaned_content_list.json`，也不会创建额外的统计文件。
+
+## Sample 翻译
+
+翻译阶段只处理 `type` 为 `text` 的对象，并按数组顺序尝试前 3 个：
+
+- 成功：保留原 `text`，增加 `translated_text` 和
+  `translation_status: "success"`；
+- 失败：保留原对象，设置 `translated_text: null`、
+  `translation_status: "failed"`，并增加 `translation_error`；
+- 超出前 3 个的 text：增加 `translation_status: "pending"`；
+- 其他类型：完全原样输出。
+
+数组顺序、对象数量和原始 `text` 字段不会改变。输出文件为同一数据目录下的
+`translated_content_list.json`。命令最后打印：
+
+```text
+实际翻译对象数量：<数量>
+翻译成功数量：<数量>
+翻译失败数量：<数量>
+待翻译数量：<数量>
+翻译文件：<路径>
+```
 
 ## Markdown 渲染
 
