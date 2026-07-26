@@ -20,3 +20,7 @@ class MinerUClientError(PDFTransError):
 
 class WorkflowError(PDFTransError):
     """Raised when workflow input validation fails."""
+
+
+class TranslationContentError(PDFTransError):
+    """Raised when translation content cannot be read or written."""
