@@ -1,0 +1,112 @@
+import json
+from io import BytesIO
+from zipfile import ZipFile
+
+import pytest
+
+from mineru_cleaner.errors import WorkflowError
+from mineru_cleaner.workflow import process_pdf
+
+
+class FakeMinerUClient:
+    def __init__(self, archive_bytes: bytes) -> None:
+        self.archive_bytes = archive_bytes
+        self.received_path = None
+
+    def parse_pdf(self, pdf_path):
+        self.received_path = pdf_path
+        return self.archive_bytes
+
+
+def make_result_zip(items) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "paper/hybrid_auto/paper_content_list.json",
+            json.dumps(items, ensure_ascii=False),
+        )
+        archive.writestr("paper/hybrid_auto/images/a.jpg", b"image")
+    return buffer.getvalue()
+
+
+def test_process_pdf_runs_complete_workflow(tmp_path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    body = {
+        "type": "text",
+        "text": "正文",
+        "page_idx": 0,
+        "bbox": [1, 2, 3, 4],
+    }
+    client = FakeMinerUClient(
+        make_result_zip(
+            [
+                {"type": "header", "text": "页眉"},
+                body,
+                {"type": "chart", "img_path": "images/a.jpg"},
+            ]
+        )
+    )
+
+    result = process_pdf(pdf, data_dir=tmp_path / "data", client=client)
+
+    assert client.received_path == pdf.resolve()
+    assert result.before_count == 3
+    assert result.filtered_count == 1
+    assert result.after_count == 2
+    assert result.output_path == (
+        tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
+    ).resolve()
+    assert json.loads(result.output_path.read_text(encoding="utf-8")) == [
+        body,
+        {"type": "chart", "img_path": "images/a.jpg"},
+    ]
+    assert (
+        tmp_path / "data/paper/hybrid_auto/images/a.jpg"
+    ).read_bytes() == b"image"
+
+
+def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    archive_bytes = make_result_zip([{"type": "text", "text": "正文"}])
+    received = {}
+
+    class ContextClient:
+        def __init__(self, *, svr_url):
+            received["svr_url"] = svr_url
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def parse_pdf(self, pdf_path):
+            return archive_bytes
+
+    monkeypatch.setattr("mineru_cleaner.workflow.MinerUClient", ContextClient)
+
+    process_pdf(
+        pdf,
+        svr_url="http://mineru.internal:7200",
+        data_dir=tmp_path / "data",
+    )
+
+    assert received["svr_url"] == "http://mineru.internal:7200"
+
+
+@pytest.mark.parametrize(
+    "filename, create_file",
+    [
+        ("missing.pdf", False),
+        ("document.txt", True),
+    ],
+)
+def test_process_pdf_rejects_invalid_input(tmp_path, filename, create_file):
+    source = tmp_path / filename
+    if create_file:
+        source.write_text("not pdf", encoding="utf-8")
+
+    with pytest.raises(WorkflowError, match="PDF"):
+        process_pdf(source, data_dir=tmp_path / "data")
