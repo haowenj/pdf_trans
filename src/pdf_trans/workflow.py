@@ -20,7 +20,11 @@ from pdf_trans.normalizer import (
     write_normalized_content_list_file,
 )
 from pdf_trans.renderer import render_content_list_file
-from pdf_trans.translation import TextTranslator, translate_content_list_file
+from pdf_trans.translation import (
+    TextTranslator,
+    TranslationStats,
+    translate_content_list_file,
+)
 from pdf_trans.translation_client import OpenAICompatibleTranslator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,10 +50,14 @@ class WorkflowResult:
     after_count: int
     content_stats: ContentStats
     translated_path: Path
-    translation_attempted_count: int
-    translation_success_count: int
-    translation_failed_count: int
-    translation_pending_count: int
+    translation_stats: TranslationStats
+
+
+@dataclass(frozen=True)
+class TranslationFileResult:
+    normalized_path: Path
+    translated_path: Path
+    stats: TranslationStats
 
 
 def validate_pdf_path(pdf_path: Path) -> Path:
@@ -61,6 +69,67 @@ def validate_pdf_path(pdf_path: Path) -> Path:
     return resolved
 
 
+def validate_normalized_path(normalized_path: Path) -> Path:
+    resolved = normalized_path.expanduser().resolve()
+    if not resolved.exists() or not resolved.is_file():
+        raise WorkflowError(
+            f"规范化内容文件不存在或不是普通文件：{normalized_path}"
+        )
+    if resolved.name != "normalized_content_list.json":
+        raise WorkflowError(
+            "翻译输入文件必须命名为 normalized_content_list.json"
+        )
+    return resolved
+
+
+def _run_translation(
+    normalized_path: Path,
+    *,
+    translator: TextTranslator | None,
+    max_retries: int | None,
+) -> TranslationFileResult:
+    translated_path = normalized_path.parent / "translated_content_list.json"
+    if translator is None:
+        with OpenAICompatibleTranslator.from_env() as translation_client:
+            retries = (
+                translation_client.max_retries
+                if max_retries is None
+                else max_retries
+            )
+            stats = translate_content_list_file(
+                normalized_path,
+                translated_path,
+                translation_client,
+                max_retries=retries,
+            )
+    else:
+        stats = translate_content_list_file(
+            normalized_path,
+            translated_path,
+            translator,
+            max_retries=(1 if max_retries is None else max_retries),
+        )
+    return TranslationFileResult(
+        normalized_path=normalized_path.resolve(),
+        translated_path=translated_path.resolve(),
+        stats=stats,
+    )
+
+
+def process_translation_file(
+    normalized_path: Path,
+    *,
+    translator: TextTranslator | None = None,
+    max_retries: int | None = None,
+) -> TranslationFileResult:
+    resolved = validate_normalized_path(normalized_path)
+    return _run_translation(
+        resolved,
+        translator=translator,
+        max_retries=max_retries,
+    )
+
+
 def process_pdf(
     pdf_path: Path,
     *,
@@ -68,6 +137,7 @@ def process_pdf(
     data_dir: Path | None = None,
     client: PDFParser | None = None,
     translator: TextTranslator | None = None,
+    translation_max_retries: int | None = None,
 ) -> WorkflowResult:
     resolved_pdf = validate_pdf_path(pdf_path)
     output_root = (data_dir or DEFAULT_DATA_DIR).resolve()
@@ -103,20 +173,11 @@ def process_pdf(
         normalized_path,
     )
 
-    translated_path = output_path.parent / "translated_content_list.json"
-    if translator is None:
-        with OpenAICompatibleTranslator.from_env() as translation_client:
-            translation_stats = translate_content_list_file(
-                normalized_path,
-                translated_path,
-                translation_client,
-            )
-    else:
-        translation_stats = translate_content_list_file(
-            normalized_path,
-            translated_path,
-            translator,
-        )
+    translation_result = _run_translation(
+        normalized_path,
+        translator=translator,
+        max_retries=translation_max_retries,
+    )
 
     markdown_path = output_path.parent / "rendered.md"
     render_content_list_file(normalized_path, markdown_path)
@@ -132,9 +193,6 @@ def process_pdf(
         filtered_count=stats.filtered_count,
         after_count=stats.after_count,
         content_stats=stats.content_stats,
-        translated_path=translated_path.resolve(),
-        translation_attempted_count=translation_stats.attempted_count,
-        translation_success_count=translation_stats.success_count,
-        translation_failed_count=translation_stats.failed_count,
-        translation_pending_count=translation_stats.pending_count,
+        translated_path=translation_result.translated_path,
+        translation_stats=translation_result.stats,
     )

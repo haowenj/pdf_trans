@@ -7,7 +7,7 @@ from typing import Sequence
 
 from pdf_trans.client import DEFAULT_SVR_URL
 from pdf_trans.errors import PDFTransError
-from pdf_trans.workflow import process_pdf
+from pdf_trans.workflow import process_pdf, process_translation_file
 
 
 def _print_group(title: str, counts: dict[str, int] | dict[int, int]) -> None:
@@ -24,7 +24,18 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m pdf_trans",
         description="使用 MinerU 解析 PDF、清洗并翻译 content list。",
     )
-    parser.add_argument("pdf_path", type=Path, help="要解析的 PDF 文件路径")
+    parser.add_argument(
+        "pdf_path",
+        type=Path,
+        nargs="?",
+        help="要解析的 PDF 文件路径",
+    )
+    parser.add_argument(
+        "--translate-only",
+        type=Path,
+        metavar="TRANSLATE_ONLY",
+        help="只翻译已有的 normalized_content_list.json",
+    )
     parser.add_argument(
         "--svr-url",
         default=DEFAULT_SVR_URL,
@@ -33,9 +44,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_translation_summary(stats, output_path: Path) -> None:
+    print(f"text 对象总数：{stats.text_count}")
+    print(f"本次模型调用数量：{stats.model_call_count}")
+    print(f"跳过的已成功数量：{stats.skipped_success_count}")
+    print(f"翻译成功数量：{stats.success_count}")
+    print(f"翻译失败数量：{stats.failed_count}")
+    print(f"待翻译数量：{stats.pending_count}")
+    print(f"翻译文件：{Path(output_path).resolve()}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if (args.pdf_path is None) == (args.translate_only is None):
+        build_parser().error("必须且只能指定 PDF 路径或 --translate-only")
     try:
+        if args.translate_only is not None:
+            result = process_translation_file(args.translate_only)
+            _print_translation_summary(result.stats, result.translated_path)
+            return 0
         result = process_pdf(args.pdf_path, svr_url=args.svr_url)
     except (PDFTransError, OSError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
@@ -54,11 +81,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"跨页候选报告：{result.candidates_path}")
     print(f"规范化后数量：{result.normalized_count}")
     print(f"规范化文件：{result.normalized_path}")
-    print(f"实际翻译对象数量：{result.translation_attempted_count}")
-    print(f"翻译成功数量：{result.translation_success_count}")
-    print(f"翻译失败数量：{result.translation_failed_count}")
-    print(f"待翻译数量：{result.translation_pending_count}")
-    print(f"翻译文件：{result.translated_path}")
+    _print_translation_summary(result.translation_stats, result.translated_path)
     return 0
 
 

@@ -6,7 +6,8 @@ import pytest
 
 from pdf_trans.cleaner import ContentStats
 from pdf_trans.errors import NormalizationError, WorkflowError
-from pdf_trans.workflow import process_pdf
+from pdf_trans.translation import TranslationStats
+from pdf_trans.workflow import process_pdf, process_translation_file
 
 
 class FakeMinerUClient:
@@ -75,10 +76,7 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     assert result.translated_path == (
         tmp_path / "data/paper/hybrid_auto/translated_content_list.json"
     ).resolve()
-    assert result.translation_attempted_count == 1
-    assert result.translation_success_count == 1
-    assert result.translation_failed_count == 0
-    assert result.translation_pending_count == 0
+    assert result.translation_stats == TranslationStats(1, 1, 0, 1, 0, 0)
     assert result.content_stats == ContentStats(
         type_counts={"chart": 1, "text": 1},
         text_level_count=0,
@@ -318,3 +316,28 @@ def test_process_pdf_rejects_invalid_input(tmp_path, filename, create_file):
 
     with pytest.raises(WorkflowError, match="PDF"):
         process_pdf(source, data_dir=tmp_path / "data")
+
+
+def test_process_translation_file_runs_resumeable_translation(tmp_path):
+    normalized = tmp_path / "normalized_content_list.json"
+    normalized.write_text(
+        json.dumps([{"type": "text", "text": "正文"}, {"type": "image"}]),
+        encoding="utf-8",
+    )
+    translator = FakeTranslator()
+
+    result = process_translation_file(normalized, translator=translator)
+
+    assert result.normalized_path == normalized.resolve()
+    assert result.translated_path == (
+        tmp_path / "translated_content_list.json"
+    ).resolve()
+    assert result.stats == TranslationStats(1, 1, 0, 1, 0, 0)
+
+
+def test_process_translation_file_requires_exact_normalized_filename(tmp_path):
+    source = tmp_path / "other.json"
+    source.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(WorkflowError, match="normalized_content_list.json"):
+        process_translation_file(source, translator=FakeTranslator())

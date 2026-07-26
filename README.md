@@ -1,7 +1,7 @@
 # PDF Trans
 
-上传一个 PDF 到 MinerU 3.4.4 异步接口，下载解析结果，清洗并 sample 翻译其中的
-content list。
+上传一个 PDF 到 MinerU 3.4.4 异步接口，下载解析结果，清洗并逐对象翻译 content
+list。
 
 ## 环境
 
@@ -35,9 +35,13 @@ python -m pdf_trans /path/to/document.pdf \
 export TRANSLATION_BASE_URL="https://api.example.com/v1"
 export TRANSLATION_API_KEY="replace-with-api-key"
 export TRANSLATION_MODEL="paper-translation-model"
+export TRANSLATION_TIMEOUT_SECONDS="60"
+export TRANSLATION_MAX_RETRIES="1"
 ```
 
-程序会在运行时读取这三个环境变量；缺少任意变量时命令会报错并停止。
+程序会在运行时读取前三个必需变量；`TRANSLATION_TIMEOUT_SECONDS` 是单次请求超时秒数，
+默认 60，必须为正数；`TRANSLATION_MAX_RETRIES` 是失败后的额外重试次数，默认 1。
+缺少必需变量或配置值非法时命令会报错并停止。
 
 MinerU 结果解压到项目的 `data/` 目录，并按以下顺序生成处理结果：
 
@@ -46,13 +50,13 @@ content_list.json
   -> cleaned_content_list.json
   -> cross_page_candidates.json（诊断报告）
   -> normalized_content_list.json
-  -> translated_content_list.json（sample：前 3 个 text）
+  -> translated_content_list.json
   -> rendered.md
 ```
 
 命令输出处理前数量、过滤数量、处理后数量、清洗结果路径、内容统计、Markdown
-文件路径、跨页候选数量、候选报告路径、规范化后数量、规范化文件路径，以及实际翻译
-对象数量、成功数量、失败数量、pending 数量和翻译文件路径。
+文件路径、跨页候选数量、候选报告路径、规范化后数量、规范化文件路径，以及翻译统计
+和翻译文件路径。
 
 程序只删除以下内容：
 
@@ -71,26 +75,39 @@ content_list.json
 
 统计结果只输出到终端，不会写入 `cleaned_content_list.json`，也不会创建额外的统计文件。
 
-## Sample 翻译
+## 论文翻译
 
-翻译阶段只处理 `type` 为 `text` 的对象，并按数组顺序尝试前 3 个：
+翻译阶段只处理 `type` 为 `text` 的对象，每个对象单独调用一次 OpenAI 兼容接口：
 
 - 成功：保留原 `text`，增加 `translated_text` 和
   `translation_status: "success"`；
 - 失败：保留原对象，设置 `translated_text: null`、
   `translation_status: "failed"`，并增加 `translation_error`；
-- 超出前 3 个的 text：增加 `translation_status: "pending"`；
 - 其他类型：完全原样输出。
 
-数组顺序、对象数量和原始 `text` 字段不会改变。输出文件为同一数据目录下的
+数组顺序、对象数量和原始 `text` 字段不会改变。正常结束时所有 text 对象都是
+`success` 或 `failed`，不会保留 `pending`。输出文件为同一数据目录下的
 `translated_content_list.json`。命令最后打印：
 
 ```text
-实际翻译对象数量：<数量>
+text 对象总数：<数量>
+本次模型调用数量：<数量>
+跳过的已成功数量：<数量>
 翻译成功数量：<数量>
 翻译失败数量：<数量>
 待翻译数量：<数量>
 翻译文件：<路径>
+```
+
+每完成一个对象，结果都会原子写入输出文件。再次运行时，程序会先校验已有输出与
+`normalized_content_list.json` 的对象数量、顺序、`type` 和 `text`；校验通过后跳过
+已有 `success`，并重新处理 `pending` 和 `failed`。校验不通过会直接报错，不使用旧结果。
+
+如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
+
+```bash
+python -m pdf_trans --translate-only \
+  /path/to/normalized_content_list.json
 ```
 
 ## Markdown 渲染
