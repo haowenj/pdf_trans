@@ -49,6 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"带 text_level 的 text 数量：{result.content_stats.text_level_count}")
     _print_group("按 text_level 分组：", result.content_stats.text_level_counts)
     _print_group("每个 page_idx 的元素数量：", result.content_stats.page_idx_counts)
+    print(f"Markdown 文件：{result.markdown_path}")
     return 0
 
 

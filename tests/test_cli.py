@@ -11,6 +11,7 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
     output = tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
+    markdown = tmp_path / "data/paper/hybrid_auto/rendered.md"
     received = {}
 
     def fake_process(path, *, svr_url):
@@ -19,6 +20,7 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
             output_path=output,
+            markdown_path=markdown,
             before_count=10,
             filtered_count=3,
             after_count=7,
@@ -52,6 +54,7 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
         "每个 page_idx 的元素数量：\n"
         "  0: 4\n"
         "  1: 3\n"
+        f"Markdown 文件：{markdown}\n"
     )
     assert captured.err == ""
 
@@ -66,6 +69,7 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
             output_path=Path("cleaned_content_list.json"),
+            markdown_path=Path("rendered.md"),
             before_count=1,
             filtered_count=0,
             after_count=1,

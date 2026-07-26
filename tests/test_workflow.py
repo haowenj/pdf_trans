@@ -61,6 +61,13 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
         text_level_counts={},
         page_idx_counts={0: 1},
     )
+    assert result.markdown_path == (
+        tmp_path / "data/paper/hybrid_auto/rendered.md"
+    ).resolve()
+    assert result.markdown_path.read_text(encoding="utf-8") == (
+        "正文\n\n"
+        "![](images/a.jpg)\n"
+    )
     assert result.output_path == (
         tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
     ).resolve()

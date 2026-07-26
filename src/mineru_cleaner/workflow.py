@@ -8,6 +8,7 @@ from mineru_cleaner.archive import extract_zip, find_content_list
 from mineru_cleaner.cleaner import ContentStats, clean_content_list_file
 from mineru_cleaner.client import DEFAULT_SVR_URL, MinerUClient
 from mineru_cleaner.errors import WorkflowError
+from mineru_cleaner.renderer import render_content_list_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
@@ -22,6 +23,7 @@ class PDFParser(Protocol):
 class WorkflowResult:
     source_path: Path
     output_path: Path
+    markdown_path: Path
     before_count: int
     filtered_count: int
     after_count: int
@@ -57,9 +59,12 @@ def process_pdf(
     source_path = find_content_list(extracted_paths)
     output_path = source_path.parent / "cleaned_content_list.json"
     stats = clean_content_list_file(source_path, output_path)
+    markdown_path = output_path.parent / "rendered.md"
+    render_content_list_file(output_path, markdown_path)
     return WorkflowResult(
         source_path=source_path,
         output_path=output_path.resolve(),
+        markdown_path=markdown_path.resolve(),
         before_count=stats.before_count,
         filtered_count=stats.filtered_count,
         after_count=stats.after_count,
