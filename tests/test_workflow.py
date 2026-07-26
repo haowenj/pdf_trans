@@ -80,6 +80,45 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     ).read_bytes() == b"image"
 
 
+def test_process_pdf_writes_cross_page_report_without_changing_other_outputs(
+    tmp_path,
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    previous = {"type": "text", "text": "上一页未结束", "page_idx": 0}
+    next_item = {"type": "text", "text": "下一页继续。", "page_idx": 1}
+    client = FakeMinerUClient(make_result_zip([previous, next_item]))
+
+    result = process_pdf(pdf, data_dir=tmp_path / "data", client=client)
+
+    assert result.candidate_count == 1
+    assert result.candidates_path == (
+        tmp_path / "data/paper/hybrid_auto/cross_page_candidates.json"
+    ).resolve()
+    assert json.loads(result.candidates_path.read_text(encoding="utf-8")) == [
+        {
+            "previous_index": 0,
+            "next_index": 1,
+            "previous_page_idx": 0,
+            "next_page_idx": 1,
+            "previous_text": "上一页未结束",
+            "next_text": "下一页继续。",
+            "reason": (
+                "相邻 text 位于连续页面，且前一个 text "
+                "未以完整句结束符 . ! ? : ; 结尾"
+            ),
+        }
+    ]
+    assert json.loads(result.output_path.read_text(encoding="utf-8")) == [
+        previous,
+        next_item,
+    ]
+    assert result.markdown_path.read_text(encoding="utf-8") == (
+        "上一页未结束\n\n"
+        "下一页继续。\n"
+    )
+
+
 def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")

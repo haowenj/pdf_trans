@@ -12,6 +12,10 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     pdf.write_bytes(b"%PDF")
     output = tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
     markdown = tmp_path / "data/paper/hybrid_auto/rendered.md"
+    candidates = (
+        tmp_path
+        / "data/paper/hybrid_auto/cross_page_candidates.json"
+    )
     received = {}
 
     def fake_process(path, *, svr_url):
@@ -21,6 +25,8 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
             source_path=Path("paper_content_list.json"),
             output_path=output,
             markdown_path=markdown,
+            candidates_path=candidates,
+            candidate_count=2,
             before_count=10,
             filtered_count=3,
             after_count=7,
@@ -55,6 +61,8 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
         "  0: 4\n"
         "  1: 3\n"
         f"Markdown 文件：{markdown}\n"
+        "跨页段落候选数量：2\n"
+        f"跨页候选报告：{candidates}\n"
     )
     assert captured.err == ""
 
@@ -70,6 +78,8 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
             source_path=Path("paper_content_list.json"),
             output_path=Path("cleaned_content_list.json"),
             markdown_path=Path("rendered.md"),
+            candidates_path=Path("cross_page_candidates.json"),
+            candidate_count=0,
             before_count=1,
             filtered_count=0,
             after_count=1,
@@ -89,7 +99,10 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
 
     assert exit_code == 0
     assert received["svr_url"] == "http://mineru.example:7200"
-    assert capsys.readouterr().out.count("  （无）") == 3
+    captured = capsys.readouterr()
+    assert captured.out.count("  （无）") == 3
+    assert "跨页段落候选数量：0" in captured.out
+    assert "跨页候选报告：cross_page_candidates.json" in captured.out
 
 
 def test_main_reports_expected_error(monkeypatch, capsys):

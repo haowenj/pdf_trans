@@ -7,6 +7,7 @@ from typing import Protocol
 from mineru_cleaner.archive import extract_zip, find_content_list
 from mineru_cleaner.cleaner import ContentStats, clean_content_list_file
 from mineru_cleaner.client import DEFAULT_SVR_URL, MinerUClient
+from mineru_cleaner.cross_page import detect_cross_page_candidates_file
 from mineru_cleaner.errors import WorkflowError
 from mineru_cleaner.renderer import render_content_list_file
 
@@ -24,6 +25,8 @@ class WorkflowResult:
     source_path: Path
     output_path: Path
     markdown_path: Path
+    candidates_path: Path
+    candidate_count: int
     before_count: int
     filtered_count: int
     after_count: int
@@ -61,10 +64,17 @@ def process_pdf(
     stats = clean_content_list_file(source_path, output_path)
     markdown_path = output_path.parent / "rendered.md"
     render_content_list_file(output_path, markdown_path)
+    candidates_path = output_path.parent / "cross_page_candidates.json"
+    candidate_count = detect_cross_page_candidates_file(
+        output_path,
+        candidates_path,
+    )
     return WorkflowResult(
         source_path=source_path,
         output_path=output_path.resolve(),
         markdown_path=markdown_path.resolve(),
+        candidates_path=candidates_path.resolve(),
+        candidate_count=candidate_count,
         before_count=stats.before_count,
         filtered_count=stats.filtered_count,
         after_count=stats.after_count,

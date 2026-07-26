@@ -50,6 +50,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     _print_group("按 text_level 分组：", result.content_stats.text_level_counts)
     _print_group("每个 page_idx 的元素数量：", result.content_stats.page_idx_counts)
     print(f"Markdown 文件：{result.markdown_path}")
+    print(f"跨页段落候选数量：{result.candidate_count}")
+    print(f"跨页候选报告：{result.candidates_path}")
     return 0
 
 
