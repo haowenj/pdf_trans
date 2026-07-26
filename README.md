@@ -30,9 +30,9 @@ python -m mineru_cleaner /path/to/document.pdf \
 ```
 
 MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 content list
-同目录的 `cleaned_content_list.json` 中，并自动在同目录生成 `rendered.md`。
-命令输出处理前数量、过滤数量、处理后数量、清洗结果路径、内容统计和 Markdown
-文件路径。
+同目录的 `cleaned_content_list.json` 中，并自动在同目录生成 `rendered.md` 和
+`cross_page_candidates.json`。命令输出处理前数量、过滤数量、处理后数量、
+清洗结果路径、内容统计、Markdown 文件路径、跨页候选数量和报告路径。
 
 程序只删除以下内容：
 
@@ -63,6 +63,15 @@ MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 con
 
 各内容片段之间保留空行。渲染过程不会修改
 `cleaned_content_list.json`，也不会把 HTML 表格转换为 Markdown 表格。
+
+## 跨页段落候选
+
+`cross_page_candidates.json` 只检查清洗数组中立即相邻的两个 `text` 对象。
+当后一个 `page_idx` 等于前一个加 1，且前一个文本忽略尾部空白后不以
+`. ! ? : ;` 结尾时，记录为疑似跨页段落。
+
+报告包含两个对象的零基数组索引、两个页码、原始文本和判断原因。检测过程不会
+修改 `cleaned_content_list.json` 或 `rendered.md`，也不会自动合并正文。
 
 ## 测试
 
