@@ -6,6 +6,10 @@ class ContentListError(MinerUCleanerError):
     """Raised when a content-list file cannot be processed."""
 
 
+class NormalizationError(MinerUCleanerError):
+    """Raised when cross-page normalization validation fails."""
+
+
 class ArchiveError(MinerUCleanerError):
     """Raised when a MinerU result archive cannot be processed."""
 
