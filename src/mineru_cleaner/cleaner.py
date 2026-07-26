@@ -77,7 +77,10 @@ def clean_items(items: list[Any]) -> tuple[list[Any], CleaningStats]:
     )
 
 
-def clean_content_list_file(source: Path, output: Path) -> CleaningStats:
+def clean_content_list_file_with_items(
+    source: Path,
+    output: Path,
+) -> tuple[list[Any], CleaningStats]:
     try:
         with source.open("r", encoding="utf-8") as handle:
             items = json.load(handle)
@@ -94,4 +97,9 @@ def clean_content_list_file(source: Path, output: Path) -> CleaningStats:
             handle.write("\n")
     except OSError as exc:
         raise ContentListError(f"无法写入清洗结果：{exc}") from exc
+    return cleaned, stats
+
+
+def clean_content_list_file(source: Path, output: Path) -> CleaningStats:
+    _, stats = clean_content_list_file_with_items(source, output)
     return stats

@@ -7,6 +7,7 @@ from mineru_cleaner.cross_page import (
     CROSS_PAGE_REASON,
     detect_cross_page_candidates,
     detect_cross_page_candidates_file,
+    write_cross_page_candidates_file,
 )
 from mineru_cleaner.errors import ContentListError
 
@@ -177,6 +178,28 @@ def test_detect_cross_page_candidates_file_writes_report_without_changing_source
     ]
     assert output.read_bytes().endswith(b"\n")
     assert source.read_bytes() == source_before
+
+
+def test_write_cross_page_candidates_file_writes_existing_candidates(tmp_path):
+    output = tmp_path / "cross_page_candidates.json"
+    candidates = [
+        {
+            "previous_index": 0,
+            "next_index": 1,
+            "previous_page_idx": 5,
+            "next_page_idx": 6,
+            "previous_text": "上半段",
+            "next_text": "下半段",
+            "reason": "诊断原因",
+        }
+    ]
+    original = copy.deepcopy(candidates)
+
+    write_cross_page_candidates_file(candidates, output)
+
+    assert json.loads(output.read_text(encoding="utf-8")) == candidates
+    assert output.read_text(encoding="utf-8").endswith("\n")
+    assert candidates == original
 
 
 def test_detect_cross_page_candidates_file_writes_empty_array(tmp_path):

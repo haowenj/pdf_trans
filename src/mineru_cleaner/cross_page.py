@@ -74,10 +74,17 @@ def detect_cross_page_candidates_file(source: Path, output: Path) -> int:
         raise ContentListError("content list 的 JSON 顶层必须是数组")
 
     candidates = detect_cross_page_candidates(items)
+    write_cross_page_candidates_file(candidates, output)
+    return len(candidates)
+
+
+def write_cross_page_candidates_file(
+    candidates: list[dict[str, Any]],
+    output: Path,
+) -> None:
     try:
         with output.open("w", encoding="utf-8") as handle:
             json.dump(candidates, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
     except OSError as exc:
         raise ContentListError(f"无法写入跨页候选报告：{exc}") from exc
-    return len(candidates)

@@ -7,6 +7,7 @@ from mineru_cleaner.cleaner import (
     ContentStats,
     CleaningStats,
     clean_content_list_file,
+    clean_content_list_file_with_items,
     clean_items,
     summarize_items,
 )
@@ -162,6 +163,41 @@ def test_clean_content_list_file_writes_utf8_json_and_counts(tmp_path):
         {"type": "text", "text": "中文正文", "page_idx": 0}
     ]
     assert "中文正文" in output.read_text(encoding="utf-8")
+
+
+def test_clean_content_list_file_with_items_returns_written_items(tmp_path):
+    source = tmp_path / "content_list.json"
+    output = tmp_path / "cleaned_content_list.json"
+    source.write_text(
+        json.dumps(
+            [
+                {"type": "header", "text": "页眉"},
+                {
+                    "type": "text",
+                    "text": "正文",
+                    "page_idx": 3,
+                    "bbox": [1, 2, 3, 4],
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    cleaned, stats = clean_content_list_file_with_items(source, output)
+
+    assert cleaned == [
+        {
+            "type": "text",
+            "text": "正文",
+            "page_idx": 3,
+            "bbox": [1, 2, 3, 4],
+        }
+    ]
+    assert json.loads(output.read_text(encoding="utf-8")) == cleaned
+    assert stats.before_count == 2
+    assert stats.filtered_count == 1
+    assert stats.after_count == 1
 
 
 def test_clean_content_list_file_does_not_serialize_statistics(tmp_path):
