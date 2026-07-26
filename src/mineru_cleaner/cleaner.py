@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,10 +10,19 @@ from mineru_cleaner.errors import ContentListError
 
 
 @dataclass(frozen=True)
+class ContentStats:
+    type_counts: dict[str, int]
+    text_level_count: int
+    text_level_counts: dict[int, int]
+    page_idx_counts: dict[int, int]
+
+
+@dataclass(frozen=True)
 class CleaningStats:
     before_count: int
     filtered_count: int
     after_count: int
+    content_stats: ContentStats
 
 
 def _should_filter(item: Any) -> bool:
@@ -27,6 +37,34 @@ def _should_filter(item: Any) -> bool:
     return item_type == "text" and isinstance(text, str) and not text.strip()
 
 
+def summarize_items(items: list[Any]) -> ContentStats:
+    type_counts: Counter[str] = Counter()
+    text_level_counts: Counter[int] = Counter()
+    page_idx_counts: Counter[int] = Counter()
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+
+        item_type = item.get("type")
+        if isinstance(item_type, str):
+            type_counts[item_type] += 1
+
+        if item_type == "text" and type(item.get("text_level")) is int:
+            text_level_counts[item["text_level"]] += 1
+
+        page_idx = item.get("page_idx")
+        if type(page_idx) is int:
+            page_idx_counts[page_idx] += 1
+
+    return ContentStats(
+        type_counts=dict(sorted(type_counts.items())),
+        text_level_count=sum(text_level_counts.values()),
+        text_level_counts=dict(sorted(text_level_counts.items())),
+        page_idx_counts=dict(sorted(page_idx_counts.items())),
+    )
+
+
 def clean_items(items: list[Any]) -> tuple[list[Any], CleaningStats]:
     cleaned = [item for item in items if not _should_filter(item)]
     before_count = len(items)
@@ -35,6 +73,7 @@ def clean_items(items: list[Any]) -> tuple[list[Any], CleaningStats]:
         before_count=before_count,
         filtered_count=before_count - after_count,
         after_count=after_count,
+        content_stats=summarize_items(cleaned),
     )
 
 
