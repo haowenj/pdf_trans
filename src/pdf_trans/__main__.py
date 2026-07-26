@@ -54,6 +54,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"跨页候选报告：{result.candidates_path}")
     print(f"规范化后数量：{result.normalized_count}")
     print(f"规范化文件：{result.normalized_path}")
+    print(f"实际翻译对象数量：{result.translation_attempted_count}")
+    print(f"翻译成功数量：{result.translation_success_count}")
+    print(f"翻译失败数量：{result.translation_failed_count}")
+    print(f"待翻译数量：{result.translation_pending_count}")
+    print(f"翻译文件：{result.translated_path}")
     return 0
 
 

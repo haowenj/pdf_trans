@@ -19,6 +19,15 @@ class FakeMinerUClient:
         return self.archive_bytes
 
 
+class FakeTranslator:
+    def __init__(self):
+        self.received = []
+
+    def translate(self, text):
+        self.received.append(text)
+        return f"译文：{text}"
+
+
 def make_result_zip(items) -> bytes:
     buffer = BytesIO()
     with ZipFile(buffer, "w") as archive:
@@ -48,14 +57,28 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
             ]
         )
     )
+    translator = FakeTranslator()
 
-    result = process_pdf(pdf, data_dir=tmp_path / "data", client=client)
+    result = process_pdf(
+        pdf,
+        data_dir=tmp_path / "data",
+        client=client,
+        translator=translator,
+    )
 
     assert client.received_path == pdf.resolve()
     assert result.before_count == 3
     assert result.filtered_count == 1
     assert result.after_count == 2
     assert result.normalized_count == 2
+    assert translator.received == ["正文"]
+    assert result.translated_path == (
+        tmp_path / "data/paper/hybrid_auto/translated_content_list.json"
+    ).resolve()
+    assert result.translation_attempted_count == 1
+    assert result.translation_success_count == 1
+    assert result.translation_failed_count == 0
+    assert result.translation_pending_count == 0
     assert result.content_stats == ContentStats(
         type_counts={"chart": 1, "text": 1},
         text_level_count=0,
@@ -85,6 +108,16 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
         body,
         {"type": "chart", "img_path": "images/a.jpg"},
     ]
+    assert json.loads(
+        result.translated_path.read_text(encoding="utf-8")
+    ) == [
+        {
+            **body,
+            "translated_text": "译文：正文",
+            "translation_status": "success",
+        },
+        {"type": "chart", "img_path": "images/a.jpg"},
+    ]
     assert (
         tmp_path / "data/paper/hybrid_auto/images/a.jpg"
     ).read_bytes() == b"image"
@@ -98,8 +131,14 @@ def test_process_pdf_writes_cross_page_report_without_changing_other_outputs(
     previous = {"type": "text", "text": "上一页未结束", "page_idx": 0}
     next_item = {"type": "text", "text": "下一页继续。", "page_idx": 1}
     client = FakeMinerUClient(make_result_zip([previous, next_item]))
+    translator = FakeTranslator()
 
-    result = process_pdf(pdf, data_dir=tmp_path / "data", client=client)
+    result = process_pdf(
+        pdf,
+        data_dir=tmp_path / "data",
+        client=client,
+        translator=translator,
+    )
 
     assert result.candidate_count == 1
     assert result.candidates_path == (
@@ -158,6 +197,7 @@ def test_process_pdf_passes_same_in_memory_items_and_candidates_to_normalizer(
             ]
         )
     )
+    translator = FakeTranslator()
     seen = {}
 
     from pdf_trans import workflow
@@ -187,7 +227,12 @@ def test_process_pdf_passes_same_in_memory_items_and_candidates_to_normalizer(
         tracking_normalize,
     )
 
-    process_pdf(pdf, data_dir=tmp_path / "data", client=client)
+    process_pdf(
+        pdf,
+        data_dir=tmp_path / "data",
+        client=client,
+        translator=translator,
+    )
 
     assert seen["normalized_items"] is seen["detected_items"]
     assert seen["normalized_candidates"] is seen["detected_candidates"]
@@ -232,6 +277,7 @@ def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
     pdf.write_bytes(b"%PDF")
     archive_bytes = make_result_zip([{"type": "text", "text": "正文"}])
     received = {}
+    translator = FakeTranslator()
 
     class ContextClient:
         def __init__(self, *, svr_url):
@@ -252,6 +298,7 @@ def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
         pdf,
         svr_url="http://mineru.internal:7200",
         data_dir=tmp_path / "data",
+        translator=translator,
     )
 
     assert received["svr_url"] == "http://mineru.internal:7200"

@@ -20,6 +20,8 @@ from pdf_trans.normalizer import (
     write_normalized_content_list_file,
 )
 from pdf_trans.renderer import render_content_list_file
+from pdf_trans.translation import TextTranslator, translate_content_list_file
+from pdf_trans.translation_client import OpenAICompatibleTranslator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
@@ -43,6 +45,11 @@ class WorkflowResult:
     filtered_count: int
     after_count: int
     content_stats: ContentStats
+    translated_path: Path
+    translation_attempted_count: int
+    translation_success_count: int
+    translation_failed_count: int
+    translation_pending_count: int
 
 
 def validate_pdf_path(pdf_path: Path) -> Path:
@@ -60,6 +67,7 @@ def process_pdf(
     svr_url: str = DEFAULT_SVR_URL,
     data_dir: Path | None = None,
     client: PDFParser | None = None,
+    translator: TextTranslator | None = None,
 ) -> WorkflowResult:
     resolved_pdf = validate_pdf_path(pdf_path)
     output_root = (data_dir or DEFAULT_DATA_DIR).resolve()
@@ -95,6 +103,21 @@ def process_pdf(
         normalized_path,
     )
 
+    translated_path = output_path.parent / "translated_content_list.json"
+    if translator is None:
+        with OpenAICompatibleTranslator.from_env() as translation_client:
+            translation_stats = translate_content_list_file(
+                normalized_path,
+                translated_path,
+                translation_client,
+            )
+    else:
+        translation_stats = translate_content_list_file(
+            normalized_path,
+            translated_path,
+            translator,
+        )
+
     markdown_path = output_path.parent / "rendered.md"
     render_content_list_file(normalized_path, markdown_path)
     return WorkflowResult(
@@ -109,4 +132,9 @@ def process_pdf(
         filtered_count=stats.filtered_count,
         after_count=stats.after_count,
         content_stats=stats.content_stats,
+        translated_path=translated_path.resolve(),
+        translation_attempted_count=translation_stats.attempted_count,
+        translation_success_count=translation_stats.success_count,
+        translation_failed_count=translation_stats.failed_count,
+        translation_pending_count=translation_stats.pending_count,
     )

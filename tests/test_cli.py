@@ -19,6 +19,10 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
         tmp_path
         / "data/paper/hybrid_auto/cross_page_candidates.json"
     )
+    translated = (
+        tmp_path
+        / "data/paper/hybrid_auto/translated_content_list.json"
+    )
     received = {}
 
     def fake_process(path, *, svr_url):
@@ -41,6 +45,11 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
                 text_level_counts={2: 1, 1: 1},
                 page_idx_counts={1: 3, 0: 4},
             ),
+            translated_path=translated,
+            translation_attempted_count=3,
+            translation_success_count=2,
+            translation_failed_count=1,
+            translation_pending_count=4,
         )
 
     monkeypatch.setattr(cli, "process_pdf", fake_process)
@@ -70,6 +79,11 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
         f"跨页候选报告：{candidates}\n"
         "规范化后数量：6\n"
         f"规范化文件：{normalized}\n"
+        "实际翻译对象数量：3\n"
+        "翻译成功数量：2\n"
+        "翻译失败数量：1\n"
+        "待翻译数量：4\n"
+        f"翻译文件：{translated}\n"
     )
     assert captured.err == ""
 
@@ -98,6 +112,11 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
                 text_level_counts={},
                 page_idx_counts={},
             ),
+            translated_path=Path("translated_content_list.json"),
+            translation_attempted_count=0,
+            translation_success_count=0,
+            translation_failed_count=0,
+            translation_pending_count=0,
         )
 
     monkeypatch.setattr(cli, "process_pdf", fake_process)
@@ -114,6 +133,8 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     assert "跨页候选报告：cross_page_candidates.json" in captured.out
     assert "规范化后数量：1" in captured.out
     assert "规范化文件：normalized_content_list.json" in captured.out
+    assert "实际翻译对象数量：0" in captured.out
+    assert "翻译文件：translated_content_list.json" in captured.out
 
 
 def test_main_reports_expected_error(monkeypatch, capsys):
