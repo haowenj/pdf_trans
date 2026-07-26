@@ -1,22 +1,22 @@
-class MinerUCleanerError(Exception):
+class PDFTransError(Exception):
     """Base exception for expected application failures."""
 
 
-class ContentListError(MinerUCleanerError):
+class ContentListError(PDFTransError):
     """Raised when a content-list file cannot be processed."""
 
 
-class NormalizationError(MinerUCleanerError):
+class NormalizationError(PDFTransError):
     """Raised when cross-page normalization validation fails."""
 
 
-class ArchiveError(MinerUCleanerError):
+class ArchiveError(PDFTransError):
     """Raised when a MinerU result archive cannot be processed."""
 
 
-class MinerUClientError(MinerUCleanerError):
+class MinerUClientError(PDFTransError):
     """Raised when communication with MinerU fails."""
 
 
-class WorkflowError(MinerUCleanerError):
+class WorkflowError(PDFTransError):
     """Raised when workflow input validation fails."""

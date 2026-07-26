@@ -1,8 +1,8 @@
 import httpx
 import pytest
 
-from mineru_cleaner.client import MinerUClient
-from mineru_cleaner.errors import MinerUClientError
+from pdf_trans.client import MinerUClient
+from pdf_trans.errors import MinerUClientError
 
 
 def test_parse_pdf_submits_polls_and_downloads_zip(tmp_path):

@@ -4,9 +4,9 @@ from zipfile import ZipFile
 
 import pytest
 
-from mineru_cleaner.cleaner import ContentStats
-from mineru_cleaner.errors import NormalizationError, WorkflowError
-from mineru_cleaner.workflow import process_pdf
+from pdf_trans.cleaner import ContentStats
+from pdf_trans.errors import NormalizationError, WorkflowError
+from pdf_trans.workflow import process_pdf
 
 
 class FakeMinerUClient:
@@ -160,7 +160,7 @@ def test_process_pdf_passes_same_in_memory_items_and_candidates_to_normalizer(
     )
     seen = {}
 
-    from mineru_cleaner import workflow
+    from pdf_trans import workflow
 
     real_detect = workflow.detect_cross_page_candidates
     real_normalize = workflow.normalize_cross_page_items
@@ -210,7 +210,7 @@ def test_process_pdf_does_not_write_normalized_when_validation_fails(
     )
     invalid_candidates = [{"previous_index": 0, "next_index": 2}]
     monkeypatch.setattr(
-        "mineru_cleaner.workflow.detect_cross_page_candidates",
+        "pdf_trans.workflow.detect_cross_page_candidates",
         lambda items: invalid_candidates,
     )
     output_dir = tmp_path / "data/paper/hybrid_auto"
@@ -246,7 +246,7 @@ def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
         def parse_pdf(self, pdf_path):
             return archive_bytes
 
-    monkeypatch.setattr("mineru_cleaner.workflow.MinerUClient", ContextClient)
+    monkeypatch.setattr("pdf_trans.workflow.MinerUClient", ContextClient)
 
     process_pdf(
         pdf,

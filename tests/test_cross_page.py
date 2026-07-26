@@ -3,13 +3,13 @@ import json
 
 import pytest
 
-from mineru_cleaner.cross_page import (
+from pdf_trans.cross_page import (
     CROSS_PAGE_REASON,
     detect_cross_page_candidates,
     detect_cross_page_candidates_file,
     write_cross_page_candidates_file,
 )
-from mineru_cleaner.errors import ContentListError
+from pdf_trans.errors import ContentListError
 
 
 def test_detect_cross_page_candidates_reports_full_candidate_without_mutation():

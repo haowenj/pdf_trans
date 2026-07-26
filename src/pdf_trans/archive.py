@@ -6,7 +6,7 @@ from shutil import copyfileobj
 from typing import Iterable
 from zipfile import BadZipFile, ZipFile
 
-from mineru_cleaner.errors import ArchiveError
+from pdf_trans.errors import ArchiveError
 
 
 def extract_zip(archive_bytes: bytes, output_dir: Path) -> tuple[Path, ...]:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mineru_cleaner.errors import ContentListError
+from pdf_trans.errors import ContentListError
 
 
 @dataclass(frozen=True)

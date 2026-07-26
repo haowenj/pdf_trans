@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from mineru_cleaner.errors import NormalizationError
-from mineru_cleaner.normalizer import (
+from pdf_trans.errors import NormalizationError
+from pdf_trans.normalizer import (
     normalize_cross_page_items,
     write_normalized_content_list_file,
 )

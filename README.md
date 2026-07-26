@@ -19,13 +19,13 @@ python -m pip install -e .
 ## 使用
 
 ```bash
-python -m mineru_cleaner /path/to/document.pdf
+python -m pdf_trans /path/to/document.pdf
 ```
 
 连接其他地址的 MinerU：
 
 ```bash
-python -m mineru_cleaner /path/to/document.pdf \
+python -m pdf_trans /path/to/document.pdf \
   --svr-url http://mineru.example:7100
 ```
 

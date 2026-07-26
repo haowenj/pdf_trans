@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from mineru_cleaner.cleaner import (
+from pdf_trans.cleaner import (
     ContentStats,
     CleaningStats,
     clean_content_list_file,
@@ -11,7 +11,7 @@ from mineru_cleaner.cleaner import (
     clean_items,
     summarize_items,
 )
-from mineru_cleaner.errors import ContentListError
+from pdf_trans.errors import ContentListError
 
 
 def test_clean_items_removes_only_explicitly_filtered_entries():

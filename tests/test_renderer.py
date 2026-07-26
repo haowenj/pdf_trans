@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from mineru_cleaner.errors import ContentListError
-from mineru_cleaner.renderer import render_content_list_file, render_items
+from pdf_trans.errors import ContentListError
+from pdf_trans.renderer import render_content_list_file, render_items
 
 
 def test_render_items_renders_supported_types_in_order_without_mutation():

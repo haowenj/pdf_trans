@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mineru_cleaner.errors import ContentListError
+from pdf_trans.errors import ContentListError
 
 CROSS_PAGE_REASON = (
     "相邻 text 位于连续页面，且前一个 text "

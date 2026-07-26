@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from mineru_cleaner.errors import MinerUClientError
+from pdf_trans.errors import MinerUClientError
 
 DEFAULT_SVR_URL = "http://127.0.0.1:7100"
 POLL_INTERVAL_SECONDS = 2.0

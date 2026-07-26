@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from mineru_cleaner import __main__ as cli
-from mineru_cleaner.client import DEFAULT_SVR_URL
-from mineru_cleaner.cleaner import ContentStats
-from mineru_cleaner.errors import WorkflowError
-from mineru_cleaner.workflow import WorkflowResult
+from pdf_trans import __main__ as cli
+from pdf_trans.client import DEFAULT_SVR_URL
+from pdf_trans.cleaner import ContentStats
+from pdf_trans.errors import WorkflowError
+from pdf_trans.workflow import WorkflowResult
 
 
 def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):

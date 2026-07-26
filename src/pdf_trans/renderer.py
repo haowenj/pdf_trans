@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mineru_cleaner.errors import ContentListError
+from pdf_trans.errors import ContentListError
 
 
 def _is_non_blank_string(value: Any) -> bool:

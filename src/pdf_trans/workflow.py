@@ -4,22 +4,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from mineru_cleaner.archive import extract_zip, find_content_list
-from mineru_cleaner.cleaner import (
+from pdf_trans.archive import extract_zip, find_content_list
+from pdf_trans.cleaner import (
     ContentStats,
     clean_content_list_file_with_items,
 )
-from mineru_cleaner.client import DEFAULT_SVR_URL, MinerUClient
-from mineru_cleaner.cross_page import (
+from pdf_trans.client import DEFAULT_SVR_URL, MinerUClient
+from pdf_trans.cross_page import (
     detect_cross_page_candidates,
     write_cross_page_candidates_file,
 )
-from mineru_cleaner.errors import WorkflowError
-from mineru_cleaner.normalizer import (
+from pdf_trans.errors import WorkflowError
+from pdf_trans.normalizer import (
     normalize_cross_page_items,
     write_normalized_content_list_file,
 )
-from mineru_cleaner.renderer import render_content_list_file
+from pdf_trans.renderer import render_content_list_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data"

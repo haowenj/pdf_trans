@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from mineru_cleaner.errors import NormalizationError
+from pdf_trans.errors import NormalizationError
 
 
 def _validate_candidate_edge(

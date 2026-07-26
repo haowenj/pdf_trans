@@ -3,8 +3,8 @@ from zipfile import ZipFile
 
 import pytest
 
-from mineru_cleaner.archive import extract_zip, find_content_list
-from mineru_cleaner.errors import ArchiveError
+from pdf_trans.archive import extract_zip, find_content_list
+from pdf_trans.errors import ArchiveError
 
 
 def make_zip(files: dict[str, bytes]) -> bytes:
