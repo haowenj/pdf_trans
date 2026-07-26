@@ -1,131 +1,114 @@
-# Minimal Paper Translation Design
+# 最小化论文翻译设计
 
-## Goal
+## 目标
 
-Extend the existing PDF processing workflow with a minimal sample translation
-stage. The stage reads the generated `normalized_content_list.json`, translates
-at most the first three eligible text objects, and writes
-`translated_content_list.json` in the same directory.
+在现有 PDF 处理流程中增加最小化的 sample 翻译阶段。该阶段读取生成的
+`normalized_content_list.json`，最多翻译前 3 个符合条件的 text 对象，并在同一目录
+写出 `translated_content_list.json`。
 
-As part of this change, rename the Python package and module entry point from
-`mineru_cleaner` to `pdf_trans`. The supported command becomes:
+同时，将 Python 包和模块入口从 `mineru_cleaner` 完整重命名为 `pdf_trans`。支持的命令为：
 
 ```bash
 python -m pdf_trans /path/to/document.pdf
 ```
 
-The old `python -m mineru_cleaner` entry point will not be retained.
+不再保留旧的 `python -m mineru_cleaner` 入口。
 
-## Architecture
+## 架构
 
-The existing MinerU parsing, cleaning, cross-page normalization, and Markdown
-rendering stages remain intact. A focused translation module will be added
-under `src/pdf_trans/` and invoked by the workflow immediately after
-`normalized_content_list.json` has been written.
+现有的 MinerU 解析、清洗、跨页规范化和 Markdown 渲染阶段保持不变。新增一个聚焦于
+翻译的模块，放在 `src/pdf_trans/` 下，并由工作流在写出
+`normalized_content_list.json` 后立即调用。
 
-The translation module will separate:
+翻译模块分离以下职责：
 
-- OpenAI-compatible HTTP communication;
-- content-list transformation and sample selection;
-- JSON file reading and writing;
-- result counts returned to the workflow and CLI.
+- OpenAI 兼容接口的 HTTP 通信；
+- content list 转换和 sample 选择；
+- JSON 文件读写；
+- 返回给工作流和 CLI 的结果统计。
 
-The existing `httpx` dependency will call the OpenAI-compatible
-`/chat/completions` endpoint directly. No OpenAI SDK or additional runtime
-dependency is needed.
+继续使用现有的 `httpx` 依赖，直接调用 OpenAI 兼容接口的
+`/chat/completions` 端点。不新增 OpenAI SDK 或其他运行时依赖。
 
-## Configuration
+## 配置
 
-The client will read these variables from the process environment:
+客户端从进程环境变量读取以下配置：
 
 - `TRANSLATION_BASE_URL`
 - `TRANSLATION_API_KEY`
 - `TRANSLATION_MODEL`
 
-All three values must be non-empty. Missing configuration is a workflow-level
-configuration error: the command exits with an error and does not claim that
-individual objects failed. Environment values are read at client creation
-time, not at module import time.
+三个变量都必须是非空值。缺少配置属于工作流级配置错误：命令报错退出，不将对象
+宣称为翻译失败。环境变量在客户端创建时读取，而不是在模块导入时读取。
 
-The base URL is normalized by removing a trailing slash, then
-`/chat/completions` is appended. This supports common values such as
-`https://api.example.com/v1`.
+客户端会去掉 base URL 末尾的斜杠，然后追加 `/chat/completions`。因此可以支持如下常见配置：
 
-## Translation Prompt
+`https://api.example.com/v1`
 
-Each eligible object's original `text` value is sent without modification.
-The system instruction requires the model to:
+## 翻译提示词
 
-- accurately translate an English chemical-engineering academic paper into
-  Simplified Chinese;
-- not summarize, rewrite, or add information;
-- preserve citation numbers such as `[38]` and `[39–41]`;
-- preserve LaTeX formulas and `$...$` content;
-- preserve numbers, units, and percentages;
-- preserve equipment identifiers such as `C-1`, `E-1`, `D-1`, and `SS1`;
-- use terminology appropriate for chemical-engineering papers;
-- return only the translation, without explanations or prefixes.
+每个符合条件对象的原始 `text` 值会不作修改地发送。系统提示词要求模型：
 
-The source text is supplied as a separate user message. A successful response
-must contain a non-empty string at `choices[0].message.content`.
+- 将英文化工学术论文准确翻译为简体中文；
+- 不总结、不改写、不补充；
+- 保留引用编号，例如 `[38]`、`[39–41]`；
+- 保留 LaTeX 公式及 `$...$` 内容；
+- 保留数值、单位和百分数；
+- 保留设备编号，例如 `C-1`、`E-1`、`D-1` 和 `SS1`；
+- 术语翻译符合化工论文表达；
+- 只返回译文，不返回解释或前缀。
 
-## Sample Selection and Data Preservation
+原文会作为单独的 user 消息发送。响应中的
+`choices[0].message.content` 必须是非空字符串，才算翻译成功。
 
-The input must be a JSON array of objects. Objects are processed in their
-original order and a new output array is built, so input objects are not
-mutated.
+## Sample 选择和数据保留
 
-For objects whose `type` is exactly `"text"`:
+输入必须是对象数组形式的 JSON。对象按原始顺序处理，并构建新的输出数组，因此不会
+修改输入对象本身。
 
-1. The first three such objects are attempted, regardless of whether an
-   earlier attempt succeeds or fails.
-2. On success, retain every original field and add:
-   - `translated_text` containing the returned translation;
-   - `translation_status: "success"`.
-3. On failure, retain every original field and add:
-   - `translated_text: null`;
-   - `translation_status: "failed"`;
-   - `translation_error` containing a concise error string.
-4. Later text objects are not sent to the model. Retain every original field
-   and add `translation_status: "pending"`. Do not add
-   `translated_text` or `translation_error` to pending objects.
+对于 `type` 恰好为 `"text"` 的对象：
 
-Objects whose `type` is not exactly `"text"` are copied unchanged. No
-translation fields are added to them.
+1. 尝试翻译前 3 个这样的对象，不受前面调用成功或失败的影响；
+2. 成功时保留所有原始字段，并增加：
+   - `translated_text`：模型返回的译文；
+   - `translation_status: "success"`；
+3. 失败时保留所有原始字段，并增加：
+   - `translated_text: null`；
+   - `translation_status: "failed"`；
+   - `translation_error`：简短错误信息；
+4. 后续 text 对象不发送给模型。保留所有原始字段，并增加
+   `translation_status: "pending"`。pending 对象不增加
+   `translated_text` 或 `translation_error`。
 
-Output order and object count always equal the input order and object count.
-If an input object already has translation-related fields, the stage overwrites
-only the fields specified for its resulting state; unrelated fields remain
-unchanged.
+`type` 不是恰好为 `"text"` 的对象直接复制，不增加任何翻译字段。
 
-## Error Handling
+输出数组的顺序和对象数量始终与输入相同。如果输入对象已经包含翻译相关字段，阶段
+只覆盖其最终状态所规定的字段，其他字段保持不变。
 
-Configuration errors and invalid top-level JSON structure are fatal and use
-the project's expected application-error hierarchy.
+## 错误处理
 
-Once translation starts, each selected object's model call is isolated.
-Network errors, non-success HTTP responses, malformed response bodies, and
-empty model output cause only that object to be marked failed. Processing then
-continues with the next selected text object, and the output file is still
-written.
+配置错误和顶层 JSON 结构无效属于致命错误，并使用项目既有的应用错误层级。
 
-File read and write failures remain workflow-level errors.
+翻译开始后，每个选中对象的模型调用彼此隔离。网络错误、非成功 HTTP 响应、响应体
+格式错误和模型返回空内容只会让当前对象标记为失败；程序随后继续处理下一个选中的
+text 对象，并仍然写出输出文件。
 
-## Workflow Result and CLI Output
+文件读写错误仍属于工作流级错误。
 
-The workflow result will add:
+## 工作流结果和 CLI 输出
 
-- translated output path;
-- attempted translation count;
-- success count;
-- failed count;
-- pending count.
+工作流结果新增：
 
-Attempted count is defined as success count plus failed count. It is at most
-three and can be lower when the normalized content contains fewer than three
-text objects.
+- 翻译输出路径；
+- 尝试翻译数量；
+- 成功数量；
+- 失败数量；
+- pending 数量。
 
-After the existing output, the CLI prints:
+尝试翻译数量定义为成功数量加失败数量。该数量最多为 3；当规范化内容中的 text
+对象少于 3 个时，也可能小于 3。
+
+现有输出之后，CLI 打印：
 
 ```text
 实际翻译对象数量：<attempted>
@@ -135,29 +118,27 @@ After the existing output, the CLI prints:
 翻译文件：<absolute path to translated_content_list.json>
 ```
 
-## Testing
+## 测试
 
-Tests will be written first. Model communication will always be mocked or
-replaced by an injected fake translator; the test suite will never call a real
-translation service.
+测试先于实现编写。模型通信始终使用 mock 或注入的 fake translator 替代；测试套件
+绝不调用真实翻译服务。
 
-Coverage will include:
+测试覆盖以下内容：
 
-- successful translation and preservation of all source fields;
-- one selected call failing while later selected calls continue;
-- exactly the first three text objects being attempted;
-- later text objects being marked pending;
-- non-text objects remaining byte-for-byte equivalent after JSON parsing;
-- unchanged array length and order;
-- fewer than three eligible text objects;
-- environment configuration loading and missing-variable errors;
-- request URL, headers, model, messages, and compatible response parsing using
-  `httpx.MockTransport`;
-- workflow placement after normalized JSON generation;
-- translated file contents and result counts;
-- renamed `pdf_trans` CLI and its summary output.
+- 翻译成功并保留所有源字段；
+- 一个选中对象调用失败后，后续选中对象仍继续处理；
+- 确实只尝试前 3 个 text 对象；
+- 后续 text 对象标记为 pending；
+- 非 text 对象经 JSON 解析后仍保持字段和值等价；
+- 数组长度和顺序不变；
+- 符合条件的 text 对象少于 3 个；
+- 环境配置读取和缺少变量错误；
+- 使用 `httpx.MockTransport` 验证请求 URL、请求头、模型、消息和兼容响应解析；
+- 翻译位于生成规范化 JSON 之后；
+- 翻译文件内容和结果统计；
+- 重命名后的 `pdf_trans` CLI 及其统计输出。
 
-## Out of Scope
+## 不在范围内
 
-This change does not add concurrency, a database, agents, retries, a retry
-queue, a web interface, batch controls, or a full-translation mode.
+本次改动不增加并发、数据库、Agent、重试、重试队列、Web 接口、批量控制或完整翻译
+模式。
