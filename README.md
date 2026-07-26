@@ -42,6 +42,14 @@ MinerU 结果解压到项目的 `data/` 目录。清洗结果保存在原始 con
 
 其他条目按原顺序、原字段保留。
 
+清洗完成后，命令行还会输出：
+
+- 清洗后每种 `type` 的数量；
+- 带 `text_level` 的 `text` 数量及按 `text_level` 的分组；
+- 每个 `page_idx` 的元素数量。
+
+统计结果只输出到终端，不会写入 `cleaned_content_list.json`，也不会创建额外的统计文件。
+
 ## 测试
 
 ```bash
