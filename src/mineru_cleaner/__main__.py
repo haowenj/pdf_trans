@@ -10,6 +10,15 @@ from mineru_cleaner.errors import MinerUCleanerError
 from mineru_cleaner.workflow import process_pdf
 
 
+def _print_group(title: str, counts: dict[str, int] | dict[int, int]) -> None:
+    print(title)
+    if not counts:
+        print("  （无）")
+        return
+    for key in sorted(counts):
+        print(f"  {key}: {counts[key]}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m mineru_cleaner",
@@ -36,6 +45,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"过滤数量：{result.filtered_count}")
     print(f"处理后数量：{result.after_count}")
     print(f"输出文件：{result.output_path}")
+    _print_group("清洗后 type 统计：", result.content_stats.type_counts)
+    print(f"带 text_level 的 text 数量：{result.content_stats.text_level_count}")
+    _print_group("按 text_level 分组：", result.content_stats.text_level_counts)
+    _print_group("每个 page_idx 的元素数量：", result.content_stats.page_idx_counts)
     return 0
 
 

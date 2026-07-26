@@ -2,6 +2,7 @@ from pathlib import Path
 
 from mineru_cleaner import __main__ as cli
 from mineru_cleaner.client import DEFAULT_SVR_URL
+from mineru_cleaner.cleaner import ContentStats
 from mineru_cleaner.errors import WorkflowError
 from mineru_cleaner.workflow import WorkflowResult
 
@@ -21,6 +22,12 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
             before_count=10,
             filtered_count=3,
             after_count=7,
+            content_stats=ContentStats(
+                type_counts={"text": 5, "image": 2},
+                text_level_count=2,
+                text_level_counts={2: 1, 1: 1},
+                page_idx_counts={1: 3, 0: 4},
+            ),
         )
 
     monkeypatch.setattr(cli, "process_pdf", fake_process)
@@ -30,14 +37,26 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert exit_code == 0
     assert received == {"path": pdf, "svr_url": DEFAULT_SVR_URL}
-    assert "处理前数量：10" in captured.out
-    assert "过滤数量：3" in captured.out
-    assert "处理后数量：7" in captured.out
-    assert f"输出文件：{output}" in captured.out
+    assert captured.out == (
+        "处理前数量：10\n"
+        "过滤数量：3\n"
+        "处理后数量：7\n"
+        f"输出文件：{output}\n"
+        "清洗后 type 统计：\n"
+        "  image: 2\n"
+        "  text: 5\n"
+        "带 text_level 的 text 数量：2\n"
+        "按 text_level 分组：\n"
+        "  1: 1\n"
+        "  2: 1\n"
+        "每个 page_idx 的元素数量：\n"
+        "  0: 4\n"
+        "  1: 3\n"
+    )
     assert captured.err == ""
 
 
-def test_main_passes_custom_svr_url(tmp_path, monkeypatch):
+def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
     received = {}
@@ -50,6 +69,12 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch):
             before_count=1,
             filtered_count=0,
             after_count=1,
+            content_stats=ContentStats(
+                type_counts={},
+                text_level_count=0,
+                text_level_counts={},
+                page_idx_counts={},
+            ),
         )
 
     monkeypatch.setattr(cli, "process_pdf", fake_process)
@@ -60,6 +85,7 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch):
 
     assert exit_code == 0
     assert received["svr_url"] == "http://mineru.example:7200"
+    assert capsys.readouterr().out.count("  （无）") == 3
 
 
 def test_main_reports_expected_error(monkeypatch, capsys):

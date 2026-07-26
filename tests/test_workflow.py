@@ -4,6 +4,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from mineru_cleaner.cleaner import ContentStats
 from mineru_cleaner.errors import WorkflowError
 from mineru_cleaner.workflow import process_pdf
 
@@ -54,6 +55,12 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     assert result.before_count == 3
     assert result.filtered_count == 1
     assert result.after_count == 2
+    assert result.content_stats == ContentStats(
+        type_counts={"chart": 1, "text": 1},
+        text_level_count=0,
+        text_level_counts={},
+        page_idx_counts={0: 1},
+    )
     assert result.output_path == (
         tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
     ).resolve()

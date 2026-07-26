@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from mineru_cleaner.archive import extract_zip, find_content_list
-from mineru_cleaner.cleaner import clean_content_list_file
+from mineru_cleaner.cleaner import ContentStats, clean_content_list_file
 from mineru_cleaner.client import DEFAULT_SVR_URL, MinerUClient
 from mineru_cleaner.errors import WorkflowError
 
@@ -25,6 +25,7 @@ class WorkflowResult:
     before_count: int
     filtered_count: int
     after_count: int
+    content_stats: ContentStats
 
 
 def validate_pdf_path(pdf_path: Path) -> Path:
@@ -62,4 +63,5 @@ def process_pdf(
         before_count=stats.before_count,
         filtered_count=stats.filtered_count,
         after_count=stats.after_count,
+        content_stats=stats.content_stats,
     )
