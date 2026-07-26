@@ -5,6 +5,8 @@ import pytest
 
 from pdf_trans.errors import TranslationClientError, TranslationConfigError
 from pdf_trans.translation_client import (
+    DEFAULT_TRANSLATION_MAX_RETRIES,
+    DEFAULT_TRANSLATION_TIMEOUT_SECONDS,
     OpenAICompatibleTranslator,
     TRANSLATION_SYSTEM_PROMPT,
 )
@@ -19,6 +21,72 @@ def test_from_env_reads_required_translation_configuration(monkeypatch):
 
     assert translator.base_url == "http://translate.example/v1"
     assert translator.model == "paper-model"
+    assert translator.timeout_seconds == DEFAULT_TRANSLATION_TIMEOUT_SECONDS
+    assert translator.max_retries == DEFAULT_TRANSLATION_MAX_RETRIES
+    translator.close()
+
+
+def test_from_env_reads_timeout_and_retry_configuration(monkeypatch):
+    monkeypatch.setenv("TRANSLATION_BASE_URL", "http://translate.example/v1")
+    monkeypatch.setenv("TRANSLATION_API_KEY", "secret")
+    monkeypatch.setenv("TRANSLATION_MODEL", "paper-model")
+    monkeypatch.setenv("TRANSLATION_TIMEOUT_SECONDS", "12.5")
+    monkeypatch.setenv("TRANSLATION_MAX_RETRIES", "3")
+
+    translator = OpenAICompatibleTranslator.from_env()
+
+    assert translator.timeout_seconds == 12.5
+    assert translator.max_retries == 3
+    translator.close()
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("TRANSLATION_TIMEOUT_SECONDS", "0"),
+        ("TRANSLATION_TIMEOUT_SECONDS", "nan"),
+        ("TRANSLATION_TIMEOUT_SECONDS", "not-a-number"),
+        ("TRANSLATION_MAX_RETRIES", "-1"),
+        ("TRANSLATION_MAX_RETRIES", "1.5"),
+        ("TRANSLATION_MAX_RETRIES", "not-an-integer"),
+    ],
+)
+def test_from_env_rejects_invalid_timeout_or_retries(monkeypatch, name, value):
+    for env_name in (
+        "TRANSLATION_BASE_URL",
+        "TRANSLATION_API_KEY",
+        "TRANSLATION_MODEL",
+    ):
+        monkeypatch.setenv(env_name, "configured")
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(TranslationConfigError, match=name):
+        OpenAICompatibleTranslator.from_env()
+
+
+def test_constructor_passes_configured_timeout_to_http_client(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("pdf_trans.translation_client.httpx.Client", FakeClient)
+
+    translator = OpenAICompatibleTranslator(
+        base_url="http://translate.example/v1",
+        api_key="secret",
+        model="paper-model",
+        timeout_seconds=7.25,
+        max_retries=4,
+    )
+
+    assert captured["timeout"] == 7.25
+    assert translator.timeout_seconds == 7.25
+    assert translator.max_retries == 4
     translator.close()
 
 

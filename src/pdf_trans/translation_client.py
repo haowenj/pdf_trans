@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from typing import Any
 
 import httpx
@@ -18,6 +19,37 @@ TRANSLATION_SYSTEM_PROMPT = """你是一名化工工程学术论文翻译助手�
 - 术语翻译应符合化工论文表达；
 - 只返回译文，不返回解释或前缀。"""
 
+DEFAULT_TRANSLATION_TIMEOUT_SECONDS = 60.0
+DEFAULT_TRANSLATION_MAX_RETRIES = 1
+
+
+def _parse_timeout(value: str) -> float:
+    try:
+        timeout = float(value)
+    except ValueError as exc:
+        raise TranslationConfigError(
+            "TRANSLATION_TIMEOUT_SECONDS 必须是大于 0 的有限数字"
+        ) from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise TranslationConfigError(
+            "TRANSLATION_TIMEOUT_SECONDS 必须是大于 0 的有限数字"
+        )
+    return timeout
+
+
+def _parse_retries(value: str) -> int:
+    try:
+        retries = int(value)
+    except ValueError as exc:
+        raise TranslationConfigError(
+            "TRANSLATION_MAX_RETRIES 必须是大于等于 0 的整数"
+        ) from exc
+    if retries < 0 or str(retries) != value.strip():
+        raise TranslationConfigError(
+            "TRANSLATION_MAX_RETRIES 必须是大于等于 0 的整数"
+        )
+    return retries
+
 
 class OpenAICompatibleTranslator:
     def __init__(
@@ -26,13 +58,25 @@ class OpenAICompatibleTranslator:
         base_url: str,
         api_key: str,
         model: str,
+        timeout_seconds: float = DEFAULT_TRANSLATION_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_TRANSLATION_MAX_RETRIES,
         http_client: httpx.Client | None = None,
     ) -> None:
+        if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise TranslationConfigError(
+                "TRANSLATION_TIMEOUT_SECONDS 必须是大于 0 的有限数字"
+            )
+        if max_retries < 0:
+            raise TranslationConfigError(
+                "TRANSLATION_MAX_RETRIES 必须是大于等于 0 的整数"
+            )
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.timeout_seconds = timeout_seconds
+        self.max_retries = max_retries
         self._api_key = api_key
         self._owns_client = http_client is None
-        self._http = http_client or httpx.Client(timeout=60.0)
+        self._http = http_client or httpx.Client(timeout=timeout_seconds)
 
     @classmethod
     def from_env(cls) -> "OpenAICompatibleTranslator":
@@ -47,10 +91,24 @@ class OpenAICompatibleTranslator:
             raise TranslationConfigError(
                 "缺少翻译环境变量：" + ", ".join(missing)
             )
+        timeout = _parse_timeout(
+            os.environ.get(
+                "TRANSLATION_TIMEOUT_SECONDS",
+                str(DEFAULT_TRANSLATION_TIMEOUT_SECONDS),
+            )
+        )
+        max_retries = _parse_retries(
+            os.environ.get(
+                "TRANSLATION_MAX_RETRIES",
+                str(DEFAULT_TRANSLATION_MAX_RETRIES),
+            )
+        )
         return cls(
             base_url=values["TRANSLATION_BASE_URL"],
             api_key=values["TRANSLATION_API_KEY"],
             model=values["TRANSLATION_MODEL"],
+            timeout_seconds=timeout,
+            max_retries=max_retries,
         )
 
     def __enter__(self) -> "OpenAICompatibleTranslator":
