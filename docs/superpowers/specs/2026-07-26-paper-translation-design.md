@@ -1,53 +1,74 @@
-# 最小化论文翻译设计
+# 正式论文翻译与断点续跑设计
 
 ## 目标
 
-在现有 PDF 处理流程中增加最小化的 sample 翻译阶段。该阶段读取生成的
-`normalized_content_list.json`，最多翻译前 3 个符合条件的 text 对象，并在同一目录
-写出 `translated_content_list.json`。
+将现有 sample 翻译升级为正式全量翻译。输入仍为
+`normalized_content_list.json`，输出仍为同目录下的
+`translated_content_list.json`。
 
-同时，将 Python 包和模块入口从 `mineru_cleaner` 完整重命名为 `pdf_trans`。支持的命令为：
+所有 `type` 恰好为 `"text"` 的对象都以单个对象为单位依次调用翻译模型。其他类型
+暂不翻译，并按当前规范化文件原样保留。正常运行结束后，每个 text 对象都必须是
+`success` 或 `failed`，不得保留 `pending`。
+
+正式模式增加可靠的文件级断点续跑、逐对象原子 checkpoint、请求超时配置、失败重试
+和完整统计。当前不增加并发、批量请求、Agent、长文本拆分、表格翻译或图注翻译。
+
+## 命令入口
+
+原有 PDF 完整流程保持兼容：
 
 ```bash
 python -m pdf_trans /path/to/document.pdf
 ```
 
-不再保留旧的 `python -m mineru_cleaner` 入口。
+该命令继续执行 MinerU 解析、清洗、跨页规范化、翻译和 Markdown 渲染。
 
-## 架构
+新增翻译专用入口：
 
-现有的 MinerU 解析、清洗、跨页规范化和 Markdown 渲染阶段保持不变。新增一个聚焦于
-翻译的模块，放在 `src/pdf_trans/` 下，并由工作流在写出
-`normalized_content_list.json` 后立即调用。
+```bash
+python -m pdf_trans --translate-only \
+  /path/to/normalized_content_list.json
+```
 
-翻译模块分离以下职责：
+`--translate-only` 只运行翻译阶段，不调用 MinerU，不重新清洗、规范化或渲染。它是中途
+退出后恢复同一翻译任务的推荐入口。
 
-- OpenAI 兼容接口的 HTTP 通信；
-- content list 转换和 sample 选择；
-- JSON 文件读写；
-- 返回给工作流和 CLI 的结果统计。
+CLI 必须要求 PDF 路径与 `--translate-only` 二选一。两者同时提供或两者都未提供时，
+参数解析失败。`--translate-only` 的输入必须存在、是普通文件，且文件名为
+`normalized_content_list.json`。
 
-继续使用现有的 `httpx` 依赖，直接调用 OpenAI 兼容接口的
-`/chat/completions` 端点。不新增 OpenAI SDK 或其他运行时依赖。
+## 组件职责
 
-## 配置
+`translation.py` 负责：
 
-客户端从进程环境变量读取以下配置：
+- 读取和校验规范化内容；
+- 初始化新的翻译结果；
+- 校验并恢复已有翻译结果；
+- 逐个处理全部 text 对象；
+- 每个对象完成后的原子 checkpoint；
+- 重试控制和运行统计。
 
-- `TRANSLATION_BASE_URL`
-- `TRANSLATION_API_KEY`
-- `TRANSLATION_MODEL`
+`translation_client.py` 负责：
 
-三个变量都必须是非空值。缺少配置属于工作流级配置错误：命令报错退出，不将对象
-宣称为翻译失败。环境变量在客户端创建时读取，而不是在模块导入时读取。
+- 从环境变量读取接口、模型、超时和最大重试次数；
+- 校验配置值；
+- 单个 text 的 OpenAI 兼容 HTTP 请求；
+- 解析并校验模型响应。
 
-客户端会去掉 base URL 末尾的斜杠，然后追加 `/chat/completions`。因此可以支持如下常见配置：
+`workflow.py` 负责：
 
-`https://api.example.com/v1`
+- 在完整 PDF 流程中调用同一个翻译文件处理函数；
+- 提供翻译专用工作流入口；
+- 将翻译统计传给 CLI。
+
+两个入口共享完全相同的翻译、恢复和原子写入逻辑。
 
 ## 翻译提示词
 
-每个符合条件对象的原始 `text` 值会不作修改地发送。系统提示词要求模型：
+每次请求只发送一个 text 对象的原始 `text` 值，不允许将整篇论文或多个 text 合并为
+一次请求。
+
+系统提示词继续要求模型：
 
 - 将英文化工学术论文准确翻译为简体中文；
 - 不总结、不改写、不补充；
@@ -58,87 +79,180 @@ python -m pdf_trans /path/to/document.pdf
 - 术语翻译符合化工论文表达；
 - 只返回译文，不返回解释或前缀。
 
-原文会作为单独的 user 消息发送。响应中的
-`choices[0].message.content` 必须是非空字符串，才算翻译成功。
+响应中的 `choices[0].message.content` 必须是非空字符串，才算一次请求成功。
 
-## Sample 选择和数据保留
+## 首次运行
 
-输入必须是对象数组形式的 JSON。对象按原始顺序处理，并构建新的输出数组，因此不会
-修改输入对象本身。
+当 `translated_content_list.json` 不存在时：
 
-对于 `type` 恰好为 `"text"` 的对象：
+1. 读取并校验 `normalized_content_list.json` 的顶层是对象数组；
+2. 深拷贝全部对象；
+3. 对每个 text 对象设置 `translation_status: "pending"`，并移除可能存在的
+   `translated_text` 和 `translation_error`；
+4. 非 text 对象保持规范化输入中的原始字段和值；
+5. 在发起第一个模型请求前，原子写出初始化结果；
+6. 按数组顺序逐个处理全部 text 对象。
 
-1. 尝试翻译前 3 个这样的对象，不受前面调用成功或失败的影响；
-2. 成功时保留所有原始字段，并增加：
-   - `translated_text`：模型返回的译文；
-   - `translation_status: "success"`；
-3. 失败时保留所有原始字段，并增加：
-   - `translated_text: null`；
-   - `translation_status: "failed"`；
-   - `translation_error`：简短错误信息；
-4. 后续 text 对象不发送给模型。保留所有原始字段，并增加
-   `translation_status: "pending"`。pending 对象不增加
-   `translated_text` 或 `translation_error`。
+初始化 checkpoint 保证进程即使很早退出，下一次仍能识别未处理对象。
 
-`type` 不是恰好为 `"text"` 的对象直接复制，不增加任何翻译字段。
+## 已有结果校验与恢复
 
-输出数组的顺序和对象数量始终与输入相同。如果输入对象已经包含翻译相关字段，阶段
-只覆盖其最终状态所规定的字段，其他字段保持不变。
+当同目录下的 `translated_content_list.json` 已存在时，先完整读取并校验，不得直接
+信任或覆盖旧结果。
 
-## 错误处理
+校验规则：
 
-配置错误和顶层 JSON 结构无效属于致命错误，并使用项目既有的应用错误层级。
+- 顶层必须是对象数组；
+- 对象数量必须与 `normalized_content_list.json` 相同；
+- 按数组索引逐项比较，确保顺序一致；
+- 每个对象的 `type` 字段是否存在及其值必须一致；
+- 每个对象的 `text` 字段是否存在及其值必须一致；
+- 每个 text 对象的 `translation_status` 必须是
+  `success`、`failed` 或 `pending`；
+- `success` 必须包含非空字符串 `translated_text`；
+- `failed` 必须包含 `translated_text: null` 和非空
+  `translation_error`。
 
-翻译开始后，每个选中对象的模型调用彼此隔离。网络错误、非成功 HTTP 响应、响应体
-格式错误和模型返回空内容只会让当前对象标记为失败；程序随后继续处理下一个选中的
-text 对象，并仍然写出输出文件。
+任一校验失败时抛出内容错误，不调用模型，也不修改旧输出文件。
 
-文件读写错误仍属于工作流级错误。
+校验通过后，从当前 `normalized_content_list.json` 重新深拷贝工作数组，只从旧结果
+继承 text 对象的 `translation_status`、`translated_text` 和
+`translation_error`。这样可保证非 text 对象以及其他源字段始终来自当前规范化输入。
 
-## 工作流结果和 CLI 输出
+恢复规则：
 
-工作流结果新增：
+- `success`：移除旧的 `translation_error`，保留有效译文并跳过模型调用；
+- `pending`：移除旧的 `translated_text` 和 `translation_error`，进入翻译；
+- `failed`：保留旧错误用于 checkpoint，然后重新进入翻译。
 
-- 翻译输出路径；
-- 尝试翻译数量；
-- 成功数量；
-- 失败数量；
-- pending 数量。
+校验和状态规范化全部完成后，先原子写入一次准备好的恢复结果，再开始新的模型调用。
 
-尝试翻译数量定义为成功数量加失败数量。该数量最多为 3；当规范化内容中的 text
-对象少于 3 个时，也可能小于 3。
+## 单对象翻译与重试
 
-现有输出之后，CLI 打印：
+每个需要翻译的 text 对象独立处理：
+
+1. 使用原始 `text` 发起模型请求；
+2. 成功时：
+   - 保留原始 `text`；
+   - 写入 `translated_text`；
+   - 设置 `translation_status: "success"`；
+   - 删除旧的 `translation_error`；
+3. 请求抛出异常时，根据 `TRANSLATION_MAX_RETRIES` 立即重试；
+4. 所有尝试仍失败时：
+   - 设置 `translated_text: null`；
+   - 设置 `translation_status: "failed"`；
+   - 将最后一次异常字符串写入 `translation_error`；
+5. 成功或最终失败后，立即原子 checkpoint；
+6. 继续处理下一个 text，不因单对象失败终止全文。
+
+`TRANSLATION_MAX_RETRIES=1` 表示首次请求失败后额外重试 1 次，因此一个对象最多产生
+2 次模型调用。当前不增加退避等待。
+
+仅捕获普通 `Exception` 作为对象级翻译失败。`KeyboardInterrupt`、`SystemExit`、
+配置错误、恢复校验错误和文件写入错误仍可终止进程；下次通过翻译专用入口继续。
+
+## 原子写入
+
+所有 checkpoint 使用同一个原子写入函数：
+
+1. 在目标文件同目录创建唯一临时文件；
+2. 以 UTF-8 和缩进 JSON 写入完整数组；
+3. flush 并对临时文件执行 `fsync`；
+4. 使用 `os.replace` 原子替换 `translated_content_list.json`；
+5. 写入失败时尽力清理临时文件，并抛出内容错误。
+
+旧输出在新文件完整落盘前保持可用。进程中断最多只会丢失当前尚未完成并 checkpoint
+的对象；此前已完成对象不会丢失。
+
+## 环境配置
+
+继续要求以下非空变量：
+
+- `TRANSLATION_BASE_URL`
+- `TRANSLATION_API_KEY`
+- `TRANSLATION_MODEL`
+
+新增：
+
+- `TRANSLATION_TIMEOUT_SECONDS`
+  - 未设置时默认 `60`；
+  - 必须解析为有限的正数；
+  - 用作 `httpx.Client` 的请求超时；
+- `TRANSLATION_MAX_RETRIES`
+  - 未设置时默认 `1`；
+  - 必须解析为非负整数；
+  - 表示首次失败后的额外重试次数。
+
+所有环境配置在创建正式翻译客户端时读取。配置值无效属于致命配置错误，必须在发起
+模型请求前终止。
+
+测试中仍允许注入 fake translator，并显式传入重试次数，从而不依赖真实环境变量。
+
+## 运行统计
+
+翻译结果统计包含：
+
+- `text_count`：输入中的 text 对象总数；
+- `model_call_count`：本次真实调用 translator/模型的次数，包含重试；
+- `skipped_success_count`：本次因已有有效 success 而跳过的对象数量；
+- `success_count`：最终输出中的 success 数量；
+- `failed_count`：最终输出中的 failed 数量；
+- `pending_count`：最终输出中的 pending 数量；
+- 输出文件绝对路径。
+
+如果同一对象首次失败、第二次成功，则 `model_call_count` 增加 2，而
+`success_count` 增加 1。
+
+正常处理完全部对象后重新从工作数组汇总最终状态，并验证 `pending_count == 0`。模型
+失败不会让命令返回工作流错误；它会正常输出 failed 数量，用户可再次运行
+`--translate-only` 重试。
+
+CLI 最终打印：
 
 ```text
-实际翻译对象数量：<attempted>
-翻译成功数量：<success>
-翻译失败数量：<failed>
-待翻译数量：<pending>
-翻译文件：<absolute path to translated_content_list.json>
+text 对象总数：<text_count>
+本次模型调用数量：<model_call_count>
+跳过的已成功数量：<skipped_success_count>
+翻译成功数量：<success_count>
+翻译失败数量：<failed_count>
+待翻译数量：<pending_count>
+翻译文件：<absolute output path>
 ```
 
 ## 测试
 
-测试先于实现编写。模型通信始终使用 mock 或注入的 fake translator 替代；测试套件
-绝不调用真实翻译服务。
+测试必须先于实现编写，且不得访问真实模型接口。
 
-测试覆盖以下内容：
+覆盖范围：
 
-- 翻译成功并保留所有源字段；
-- 一个选中对象调用失败后，后续选中对象仍继续处理；
-- 确实只尝试前 3 个 text 对象；
-- 后续 text 对象标记为 pending；
-- 非 text 对象经 JSON 解析后仍保持字段和值等价；
-- 数组长度和顺序不变；
-- 符合条件的 text 对象少于 3 个；
-- 环境配置读取和缺少变量错误；
-- 使用 `httpx.MockTransport` 验证请求 URL、请求头、模型、消息和兼容响应解析；
-- 翻译位于生成规范化 JSON 之后；
-- 翻译文件内容和结果统计；
-- 重命名后的 `pdf_trans` CLI 及其统计输出。
+- 首次运行翻译全部 text，非 text 原样保留；
+- 每次只把一个 text 传给 translator；
+- 不再存在 sample 数量限制；
+- 正常结束后 pending 为 0；
+- 单对象失败后继续处理后续对象；
+- success 删除旧 `translation_error`；
+- 默认重试 1 次、配置零重试和多次重试；
+- 模型调用统计包含重试；
+- 已有 success 跳过，failed 和 pending 重新处理；
+- 旧结果数量、顺序、`type` 或 `text` 不一致时拒绝恢复且不修改旧文件；
+- 无效状态和无效 success/failed 字段拒绝恢复；
+- 每完成一个对象执行一次原子 checkpoint；
+- 中途异常后再次运行时只处理未成功对象；
+- 临时文件、flush、`fsync` 和 `os.replace` 的原子写入行为；
+- 超时和重试环境变量的默认值、有效值与非法值；
+- 完整 PDF 命令保持兼容；
+- `--translate-only` 只执行翻译阶段；
+- CLI 输出完整正式统计。
 
 ## 不在范围内
 
-本次改动不增加并发、数据库、Agent、重试、重试队列、Web 接口、批量控制或完整翻译
-模式。
+本次不增加：
+
+- 并发；
+- 批量模型请求；
+- Agent；
+- 长文本拆分；
+- 表格翻译；
+- 图注翻译；
+- 数据库或额外 checkpoint 文件；
+- 自动退避或任务队列。
