@@ -52,6 +52,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"Markdown 文件：{result.markdown_path}")
     print(f"跨页段落候选数量：{result.candidate_count}")
     print(f"跨页候选报告：{result.candidates_path}")
+    print(f"规范化后数量：{result.normalized_count}")
+    print(f"规范化文件：{result.normalized_path}")
     return 0
 
 

@@ -5,10 +5,20 @@ from pathlib import Path
 from typing import Protocol
 
 from mineru_cleaner.archive import extract_zip, find_content_list
-from mineru_cleaner.cleaner import ContentStats, clean_content_list_file
+from mineru_cleaner.cleaner import (
+    ContentStats,
+    clean_content_list_file_with_items,
+)
 from mineru_cleaner.client import DEFAULT_SVR_URL, MinerUClient
-from mineru_cleaner.cross_page import detect_cross_page_candidates_file
+from mineru_cleaner.cross_page import (
+    detect_cross_page_candidates,
+    write_cross_page_candidates_file,
+)
 from mineru_cleaner.errors import WorkflowError
+from mineru_cleaner.normalizer import (
+    normalize_cross_page_items,
+    write_normalized_content_list_file,
+)
 from mineru_cleaner.renderer import render_content_list_file
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -24,6 +34,8 @@ class PDFParser(Protocol):
 class WorkflowResult:
     source_path: Path
     output_path: Path
+    normalized_path: Path
+    normalized_count: int
     markdown_path: Path
     candidates_path: Path
     candidate_count: int
@@ -61,20 +73,38 @@ def process_pdf(
     extracted_paths = extract_zip(archive_bytes, output_root)
     source_path = find_content_list(extracted_paths)
     output_path = source_path.parent / "cleaned_content_list.json"
-    stats = clean_content_list_file(source_path, output_path)
-    markdown_path = output_path.parent / "rendered.md"
-    render_content_list_file(output_path, markdown_path)
-    candidates_path = output_path.parent / "cross_page_candidates.json"
-    candidate_count = detect_cross_page_candidates_file(
+    cleaned_items, stats = clean_content_list_file_with_items(
+        source_path,
         output_path,
+    )
+
+    candidates = detect_cross_page_candidates(cleaned_items)
+    candidates_path = output_path.parent / "cross_page_candidates.json"
+    write_cross_page_candidates_file(
+        candidates,
         candidates_path,
     )
+
+    normalized_items = normalize_cross_page_items(
+        cleaned_items,
+        candidates,
+    )
+    normalized_path = output_path.parent / "normalized_content_list.json"
+    write_normalized_content_list_file(
+        normalized_items,
+        normalized_path,
+    )
+
+    markdown_path = output_path.parent / "rendered.md"
+    render_content_list_file(normalized_path, markdown_path)
     return WorkflowResult(
         source_path=source_path,
         output_path=output_path.resolve(),
+        normalized_path=normalized_path.resolve(),
+        normalized_count=len(normalized_items),
         markdown_path=markdown_path.resolve(),
         candidates_path=candidates_path.resolve(),
-        candidate_count=candidate_count,
+        candidate_count=len(candidates),
         before_count=stats.before_count,
         filtered_count=stats.filtered_count,
         after_count=stats.after_count,

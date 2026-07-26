@@ -11,6 +11,9 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
     output = tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
+    normalized = (
+        tmp_path / "data/paper/hybrid_auto/normalized_content_list.json"
+    )
     markdown = tmp_path / "data/paper/hybrid_auto/rendered.md"
     candidates = (
         tmp_path
@@ -24,6 +27,8 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
             output_path=output,
+            normalized_path=normalized,
+            normalized_count=6,
             markdown_path=markdown,
             candidates_path=candidates,
             candidate_count=2,
@@ -63,6 +68,8 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
         f"Markdown 文件：{markdown}\n"
         "跨页段落候选数量：2\n"
         f"跨页候选报告：{candidates}\n"
+        "规范化后数量：6\n"
+        f"规范化文件：{normalized}\n"
     )
     assert captured.err == ""
 
@@ -77,6 +84,8 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
             output_path=Path("cleaned_content_list.json"),
+            normalized_path=Path("normalized_content_list.json"),
+            normalized_count=1,
             markdown_path=Path("rendered.md"),
             candidates_path=Path("cross_page_candidates.json"),
             candidate_count=0,
@@ -103,6 +112,8 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     assert captured.out.count("  （无）") == 3
     assert "跨页段落候选数量：0" in captured.out
     assert "跨页候选报告：cross_page_candidates.json" in captured.out
+    assert "规范化后数量：1" in captured.out
+    assert "规范化文件：normalized_content_list.json" in captured.out
 
 
 def test_main_reports_expected_error(monkeypatch, capsys):

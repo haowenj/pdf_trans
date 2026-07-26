@@ -5,7 +5,7 @@ from zipfile import ZipFile
 import pytest
 
 from mineru_cleaner.cleaner import ContentStats
-from mineru_cleaner.errors import WorkflowError
+from mineru_cleaner.errors import NormalizationError, WorkflowError
 from mineru_cleaner.workflow import process_pdf
 
 
@@ -55,6 +55,7 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     assert result.before_count == 3
     assert result.filtered_count == 1
     assert result.after_count == 2
+    assert result.normalized_count == 2
     assert result.content_stats == ContentStats(
         type_counts={"chart": 1, "text": 1},
         text_level_count=0,
@@ -71,7 +72,16 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     assert result.output_path == (
         tmp_path / "data/paper/hybrid_auto/cleaned_content_list.json"
     ).resolve()
+    assert result.normalized_path == (
+        tmp_path / "data/paper/hybrid_auto/normalized_content_list.json"
+    ).resolve()
     assert json.loads(result.output_path.read_text(encoding="utf-8")) == [
+        body,
+        {"type": "chart", "img_path": "images/a.jpg"},
+    ]
+    assert json.loads(
+        result.normalized_path.read_text(encoding="utf-8")
+    ) == [
         body,
         {"type": "chart", "img_path": "images/a.jpg"},
     ]
@@ -113,10 +123,108 @@ def test_process_pdf_writes_cross_page_report_without_changing_other_outputs(
         previous,
         next_item,
     ]
+    assert result.normalized_count == 1
+    assert result.normalized_path == (
+        tmp_path / "data/paper/hybrid_auto/normalized_content_list.json"
+    ).resolve()
+    assert json.loads(
+        result.normalized_path.read_text(encoding="utf-8")
+    ) == [
+        {
+            "type": "text",
+            "text": "上一页未结束 下一页继续。",
+            "page_idx": 0,
+            "source_page_indices": [0, 1],
+            "source_bboxes": [None, None],
+            "merged_cross_page": True,
+        }
+    ]
     assert result.markdown_path.read_text(encoding="utf-8") == (
-        "上一页未结束\n\n"
-        "下一页继续。\n"
+        "上一页未结束 下一页继续。\n"
     )
+
+
+def test_process_pdf_passes_same_in_memory_items_and_candidates_to_normalizer(
+    tmp_path,
+    monkeypatch,
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = FakeMinerUClient(
+        make_result_zip(
+            [
+                {"type": "text", "text": "前", "page_idx": 0},
+                {"type": "text", "text": "后", "page_idx": 1},
+            ]
+        )
+    )
+    seen = {}
+
+    from mineru_cleaner import workflow
+
+    real_detect = workflow.detect_cross_page_candidates
+    real_normalize = workflow.normalize_cross_page_items
+
+    def tracking_detect(items):
+        candidates = real_detect(items)
+        seen["detected_items"] = items
+        seen["detected_candidates"] = candidates
+        return candidates
+
+    def tracking_normalize(items, candidates):
+        seen["normalized_items"] = items
+        seen["normalized_candidates"] = candidates
+        return real_normalize(items, candidates)
+
+    monkeypatch.setattr(
+        workflow,
+        "detect_cross_page_candidates",
+        tracking_detect,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "normalize_cross_page_items",
+        tracking_normalize,
+    )
+
+    process_pdf(pdf, data_dir=tmp_path / "data", client=client)
+
+    assert seen["normalized_items"] is seen["detected_items"]
+    assert seen["normalized_candidates"] is seen["detected_candidates"]
+
+
+def test_process_pdf_does_not_write_normalized_when_validation_fails(
+    tmp_path,
+    monkeypatch,
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = FakeMinerUClient(
+        make_result_zip(
+            [
+                {"type": "text", "text": "A", "page_idx": 0},
+                {"type": "text", "text": "B", "page_idx": 1},
+                {"type": "text", "text": "C", "page_idx": 2},
+            ]
+        )
+    )
+    invalid_candidates = [{"previous_index": 0, "next_index": 2}]
+    monkeypatch.setattr(
+        "mineru_cleaner.workflow.detect_cross_page_candidates",
+        lambda items: invalid_candidates,
+    )
+    output_dir = tmp_path / "data/paper/hybrid_auto"
+
+    with pytest.raises(NormalizationError, match="索引必须相邻"):
+        process_pdf(pdf, data_dir=tmp_path / "data", client=client)
+
+    assert not (output_dir / "normalized_content_list.json").exists()
+    assert not (output_dir / "rendered.md").exists()
+    assert json.loads(
+        (output_dir / "cross_page_candidates.json").read_text(
+            encoding="utf-8"
+        )
+    ) == invalid_candidates
 
 
 def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
