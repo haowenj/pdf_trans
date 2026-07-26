@@ -1,41 +1,39 @@
-# MinerU Content Cleaner Design
+# MinerU 内容清洗器设计
 
-## Goal
+## 目标
 
-Build a minimal Python command-line project that accepts one PDF path, submits
-the PDF to the locally deployed MinerU 3.4.4 asynchronous task API, downloads
-and extracts the returned ZIP archive under the project-local `data/`
-directory, cleans the generated content-list JSON, and reports item counts.
+构建一个最小化的 Python 命令行项目：接收一个 PDF 文件路径，将 PDF
+提交给本地部署的 MinerU 3.4.4 异步任务接口，下载并解压返回的 ZIP
+压缩包到项目本地的 `data/` 目录，清洗生成的内容列表 JSON，并输出条目数量统计。
 
-The project does not generate Markdown, merge cross-page paragraphs or tables,
-create a document IR, use agents or databases, or expose a web API.
+本项目不生成 Markdown，不处理跨页段落或表格合并，不创建 Document IR，
+不使用 Agent 或数据库，也不提供 Web 接口。
 
-## Command-Line Interface
+## 命令行接口
 
-The command accepts exactly one positional PDF path:
+命令接受且只接受一个位置参数，即 PDF 路径：
 
 ```bash
 python -m mineru_cleaner /absolute/or/relative/path/document.pdf
 ```
 
-The command validates that the path exists, is a regular file, and has a
-case-insensitive `.pdf` suffix. MinerU is expected at
-`http://127.0.0.1:7100`.
+命令会检查路径存在、目标是普通文件，并且扩展名不区分大小写地为 `.pdf`。
+MinerU 服务地址固定为 `http://127.0.0.1:7100`。
 
-On success, the command prints:
+处理成功后输出：
 
-- the number of items before cleaning;
-- the number of filtered items;
-- the number of items after cleaning; and
-- the path of `cleaned_content_list.json`.
+- 处理前的条目数量；
+- 过滤掉的条目数量；
+- 处理后的条目数量；
+- `cleaned_content_list.json` 的路径。
 
-Errors are written as concise messages and cause a non-zero exit status.
+错误以简洁信息输出，并使用非零退出码。
 
-## MinerU Request
+## MinerU 请求
 
-The client submits the PDF with `POST /tasks`, using:
+客户端通过 `POST /tasks` 上传 PDF，使用以下参数：
 
-| Field | Value |
+| 字段 | 值 |
 | --- | --- |
 | `backend` | `hybrid-engine` |
 | `parse_method` | `auto` |
@@ -49,115 +47,107 @@ The client submits the PDF with `POST /tasks`, using:
 | `return_images` | `true` |
 | `response_format_zip` | `true` |
 
-The server response must contain string values for `task_id`, `status_url`, and
-`result_url`. The client polls `status_url` every two seconds:
+服务端响应必须包含字符串类型的 `task_id`、`status_url` 和 `result_url`。
+客户端每两秒轮询一次 `status_url`：
 
-- `pending` and `processing` continue polling;
-- `completed` starts the ZIP download from `result_url`;
-- `failed` stops and reports the server's error;
-- an unknown status or malformed response stops with an error.
+- `pending` 和 `processing`：继续轮询；
+- `completed`：从 `result_url` 下载 ZIP；
+- `failed`：停止并报告服务端错误；
+- 未知状态或响应格式错误：停止并报告错误。
 
-Polling has a 30-minute deadline. Individual HTTP requests also have finite
-timeouts so that an unavailable server does not hang the command indefinitely.
+轮询总时限为 30 分钟。每次 HTTP 请求也设置有限超时，避免服务不可用时命令无限等待。
 
-## Output and ZIP Handling
+## 输出与 ZIP 处理
 
-The downloaded archive is temporary and is not committed. Its contents are
-extracted directly below the project-local `data/` directory, preserving the
-archive's directory structure. This yields paths shaped like:
+下载的压缩包只作为临时文件，不提交到 Git。压缩包内容直接解压到项目本地的
+`data/` 目录下，并保留压缩包内的目录结构，路径形态如下：
 
 ```text
 data/<pdf-stem>/<backend>_<parse-method>/...
 ```
 
-ZIP entries with absolute paths, `..` components, or resolved targets outside
-`data/` are rejected. A rerun for the same PDF replaces files at the same
-archive-relative paths with the newest MinerU result; unrelated files in
-`data/` are left untouched.
+如果 ZIP 条目包含绝对路径、`..` 路径段，或解析后的目标路径位于 `data/`
+目录之外，则拒绝解压。对同一个 PDF 重复处理时，会用最新 MinerU 结果替换相同的
+压缩包相对路径；`data/` 中无关的其他文件不受影响。
 
-After extraction, the workflow recursively locates exactly one file whose name
-ends with `_content_list.json`. A file ending in `_content_list_v2.json` does
-not match. No match or multiple matches is an error. The cleaned result is
-written alongside the matched source as:
+解压完成后，工作流递归查找名称以 `_content_list.json` 结尾的文件。
+以 `_content_list_v2.json` 结尾的文件不算匹配。找不到文件或找到多个文件都视为错误。
+清洗结果写在匹配到的原始文件旁边：
 
 ```text
 cleaned_content_list.json
 ```
 
-The entire `data/` directory is ignored by Git.
+整个 `data/` 目录都加入 Git 忽略规则。
 
-## Cleaning Rules
+## 清洗规则
 
-The source JSON must be a top-level array. It is traversed once in its existing
-array order. An item is removed only when one of these conditions holds:
+源 JSON 顶层必须是数组。程序只遍历一次，并保持数组原有顺序。仅当满足以下条件之一时删除条目：
 
-1. `type` is `header`;
-2. `type` is `footer`;
-3. `type` is `page_number`; or
-4. `type` is `text`, its `text` value is a string, and `text.strip()` is empty.
+1. `type` 为 `header`；
+2. `type` 为 `footer`；
+3. `type` 为 `page_number`；
+4. `type` 为 `text`，且 `text` 是字符串并且 `text.strip()` 为空。
 
-Every other item is retained. This explicitly includes:
+其他所有条目都保留，明确包括：
 
-- ordinary `text`;
-- heading `text` with `text_level`;
-- `image`;
-- `table`;
-- `chart`;
-- `ref_text`; and
-- unknown types introduced by MinerU in the future.
+- 普通 `text`；
+- 带 `text_level` 的标题 `text`；
+- `image`；
+- `table`；
+- `chart`；
+- `ref_text`；
+- MinerU 未来新增的未知类型。
 
-Retained JSON objects are written without changing, adding, or removing any of
-their fields or values. Fields such as `page_idx`, `bbox`, `img_path`,
-captions, footnotes, `content`, and `table_body` therefore remain intact.
-Serialization may change insignificant JSON whitespace, but not the JSON data.
+保留的 JSON 对象不修改、不添加、不删除任何字段或字段值。因此 `page_idx`、`bbox`、
+`img_path`、caption、footnote、`content`、`table_body` 等字段都会完整保留。
+JSON 序列化时可以改变无意义的空白格式，但不能改变 JSON 数据本身。
 
-The reported counts satisfy:
+输出的数量满足：
 
 ```text
 before_count = filtered_count + after_count
 ```
 
-## Code Structure
+## 代码结构
 
-The package uses focused modules:
+程序包按职责拆分为以下模块：
 
-- `mineru_cleaner.cleaner`: pure content-list filtering and JSON file writing;
-- `mineru_cleaner.client`: MinerU task submission, polling, and ZIP download;
-- `mineru_cleaner.archive`: safe extraction and content-list discovery;
-- `mineru_cleaner.workflow`: orchestration from PDF to cleaned result;
-- `mineru_cleaner.__main__`: argument parsing, reporting, and exit status.
+- `mineru_cleaner.cleaner`：纯内容列表过滤和 JSON 文件写入；
+- `mineru_cleaner.client`：MinerU 任务提交、状态轮询和 ZIP 下载；
+- `mineru_cleaner.archive`：安全解压和内容列表文件定位；
+- `mineru_cleaner.workflow`：从 PDF 到清洗结果的流程编排；
+- `mineru_cleaner.__main__`：参数解析、统计输出和退出状态处理。
 
-`httpx` is the only runtime dependency. `pytest` is used for tests.
+运行时唯一依赖为 `httpx`，测试使用 `pytest`。
 
-## Failure Handling
+## 失败处理
 
-The workflow fails without producing a misleading success report when:
+遇到以下情况时，工作流失败并且不会输出误导性的成功报告：
 
-- the input is not a readable PDF path;
-- MinerU is unavailable or returns a non-success HTTP response;
-- a task fails, times out, or returns an invalid status payload;
-- the result is not a ZIP response;
-- the archive contains an unsafe path;
-- the content-list file is missing or ambiguous;
-- the JSON cannot be decoded or is not a top-level array; or
-- an output file cannot be written.
+- 输入路径不是可读的 PDF 文件；
+- MinerU 不可用，或返回非成功 HTTP 响应；
+- 任务失败、超时，或返回无效的状态响应；
+- 结果响应不是 ZIP；
+- 压缩包包含不安全路径；
+- 找不到内容列表文件，或匹配到多个文件；
+- JSON 无法解析，或顶层不是数组；
+- 输出文件无法写入。
 
-## Test Strategy
+## 测试策略
 
-Tests are written before production code and cover:
+先编写测试，再编写生产代码。测试覆盖：
 
-- all four removal rules;
-- preservation of order, complete objects, headings, images, tables, charts,
-  reference text, and unknown types;
-- exact before, filtered, and after counts;
-- MinerU task submission fields and PDF multipart upload;
-- pending/processing/completed polling and failed-task handling;
-- ZIP response download and safe extraction;
-- rejection of path traversal entries;
-- exact content-list discovery without selecting `_content_list_v2.json`;
-- an end-to-end workflow using a synthetic MinerU ZIP; and
-- command-line success reporting and non-zero failure behavior.
+- 四条删除规则；
+- 顺序、完整对象、标题、图片、表格、图表、参考文献和未知类型的保留；
+- 处理前、过滤和处理后三个数量的准确性；
+- MinerU 任务提交字段和 PDF multipart 上传；
+- `pending`/`processing`/`completed` 轮询以及失败任务处理；
+- ZIP 响应下载和安全解压；
+- 路径穿越条目的拒绝；
+- 内容列表文件的精确定位，确保不误选 `_content_list_v2.json`；
+- 使用合成 MinerU ZIP 的端到端工作流；
+- 命令行成功输出和失败时的非零退出行为。
 
-The test suite does not require a running MinerU server. After unit tests pass,
-the implementation is also verified against the live local MinerU health
-endpoint and, when practical, the provided sample PDF.
+测试套件不要求运行中的 MinerU 服务。单元测试通过后，还会验证本地 MinerU
+健康检查接口；条件允许时，再使用用户提供的样例 PDF 进行实际验证。
