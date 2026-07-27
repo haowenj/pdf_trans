@@ -1,4 +1,5 @@
 import json
+import logging
 from io import BytesIO
 from zipfile import ZipFile
 
@@ -341,3 +342,113 @@ def test_process_translation_file_requires_exact_normalized_filename(tmp_path):
 
     with pytest.raises(WorkflowError, match="normalized_content_list.json"):
         process_translation_file(source, translator=FakeTranslator())
+
+
+def test_process_translation_file_passes_explicit_concurrency(
+    tmp_path,
+    monkeypatch,
+):
+    normalized = tmp_path / "normalized_content_list.json"
+    normalized.write_text("[]", encoding="utf-8")
+    received = {}
+
+    def fake_translate(source, output, translator, **kwargs):
+        received.update(kwargs)
+        return TranslationStats(0, 0, 0, 0, 0, 0)
+
+    monkeypatch.setattr(
+        "pdf_trans.workflow.translate_content_list_file",
+        fake_translate,
+    )
+
+    process_translation_file(
+        normalized,
+        translator=FakeTranslator(),
+        max_retries=2,
+        concurrency=7,
+    )
+
+    assert received == {"max_retries": 2, "concurrency": 7}
+
+
+def test_process_translation_file_uses_client_retry_and_concurrency(
+    tmp_path,
+    monkeypatch,
+):
+    normalized = tmp_path / "normalized_content_list.json"
+    normalized.write_text("[]", encoding="utf-8")
+    received = {}
+
+    class ContextTranslator:
+        max_retries = 3
+        concurrency = 4
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return None
+
+        def translate(self, text):
+            return text
+
+    monkeypatch.setattr(
+        "pdf_trans.workflow.OpenAICompatibleTranslator.from_env",
+        lambda: ContextTranslator(),
+    )
+
+    def fake_translate(source, output, translator, **kwargs):
+        received.update(kwargs)
+        return TranslationStats(0, 0, 0, 0, 0, 0)
+
+    monkeypatch.setattr(
+        "pdf_trans.workflow.translate_content_list_file",
+        fake_translate,
+    )
+
+    process_translation_file(normalized)
+
+    assert received == {"max_retries": 3, "concurrency": 4}
+
+
+def test_process_pdf_logs_stage_actions_counts_and_cross_page_merge(
+    tmp_path,
+    caplog,
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = FakeMinerUClient(
+        make_result_zip(
+            [
+                {"type": "header", "text": "页眉"},
+                {"type": "text", "text": "上一页未结束", "page_idx": 0},
+                {"type": "text", "text": "下一页继续。", "page_idx": 1},
+            ]
+        )
+    )
+    caplog.set_level(logging.INFO)
+
+    process_pdf(
+        pdf,
+        data_dir=tmp_path / "data",
+        client=client,
+        translator=FakeTranslator(),
+        translation_concurrency=1,
+    )
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    for stage in (
+        "校验 PDF",
+        "调用 MinerU",
+        "解压解析结果",
+        "清洗数据",
+        "检测跨页段落",
+        "合并跨页段落",
+        "翻译 text 对象",
+        "渲染 Markdown",
+    ):
+        assert f"开始{stage}" in messages
+        assert f"{stage}完成" in messages
+    assert "清洗数据完成：输入 3 项，过滤 1 项，保留 2 项" in messages
+    assert "被分页分裂，将合并为一个段落" in messages
+    assert "耗时 " in messages
