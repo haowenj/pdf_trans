@@ -143,6 +143,19 @@ python -m pdf_trans --translate-only \
 `translated_content_list.json`、`cross_page_candidates.json`，也不会把 HTML
 表格转换为 Markdown 表格。
 
+## 待办事项
+
+- 增加 `rendered.md` 的网页预览页面，通过 Markdown 解析器将文件转换为 HTML；
+- 开启 Markdown 解析器的原生 HTML 支持，使 `<table>`、`rowspan` 和 `colspan`
+  能按 MinerU 输出的表格结构正常展示；
+- 对渲染结果进行 HTML 安全清洗，只保留允许的标签和属性，避免不受信任内容造成
+  XSS；
+- 为表格补充边框、单元格间距和窄屏横向滚动样式，保证宽表格在桌面端与移动端均可
+  阅读；
+- 接入 KaTeX 或 MathJax，渲染正文及 HTML 表格单元格中的 LaTeX 公式；
+- 增加网页渲染测试，覆盖普通表格、合并单元格、超宽表格、公式和危险 HTML
+  过滤。
+
 ## 跨页段落候选
 
 `cross_page_candidates.json` 只检查清洗数组中立即相邻的两个 `text` 对象。
