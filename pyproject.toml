@@ -13,11 +13,36 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+    "build>=1.2,<2",
     "pytest>=8,<9",
+]
+web = [
+    "alembic>=1.16,<2",
+    "fastapi>=0.116,<1",
+    "jinja2>=3.1,<4",
+    "markdown-it-py>=4,<5",
+    "nh3>=0.3,<1",
+    "python-multipart>=0.0.20,<1",
+    "sqlalchemy>=2.0,<3",
+    "uvicorn>=0.35,<1",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"pdf_trans.web" = [
+    "templates/*.html",
+    "static/*.css",
+    "static/*.js",
+    "static/vendor/katex/*.css",
+    "static/vendor/katex/*.js",
+    "static/vendor/katex/*.txt",
+    "static/vendor/katex/fonts/*",
+    "migrations/*.py",
+    "migrations/*.mako",
+    "migrations/versions/*.py",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
