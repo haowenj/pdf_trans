@@ -154,31 +154,33 @@ def test_main_reports_expected_error(monkeypatch, capsys):
     assert captured.err == "\033[31m[ERROR]\033[0m 错误：PDF 文件不存在\n"
 
 
-def test_main_translate_only_prints_translation_summary(tmp_path, monkeypatch, capsys):
+def test_main_translate_only_renders_markdown(tmp_path, monkeypatch, capsys):
     normalized = tmp_path / "normalized_content_list.json"
-    received = {}
+    translated = tmp_path / "translated_content_list.json"
+    rendered = tmp_path / "rendered.md"
+    calls = []
 
-    def fake_process(path, *, translator=None, max_retries=None):
-        received.update(path=path, translator=translator, max_retries=max_retries)
+    def fake_process(path):
+        calls.append(("translate", path))
         return type(
             "Result",
             (),
             {
-                "translated_path": tmp_path / "translated_content_list.json",
+                "translated_path": translated,
                 "stats": TranslationStats(2, 3, 1, 2, 0, 0),
             },
         )()
 
+    def fake_render(source, output):
+        calls.append(("render", source, output))
+
     monkeypatch.setattr(cli, "process_translation_file", fake_process)
+    monkeypatch.setattr(cli, "render_content_list_file", fake_render)
 
     exit_code = cli.main(["--translate-only", str(normalized)])
 
     assert exit_code == 0
-    assert received == {
-        "path": normalized,
-        "translator": None,
-        "max_retries": None,
-    }
+    assert calls == [("translate", normalized), ("render", translated, rendered)]
     assert capsys.readouterr().out == (
         "text 对象总数：2\n"
         "本次模型调用数量：3\n"
@@ -186,7 +188,8 @@ def test_main_translate_only_prints_translation_summary(tmp_path, monkeypatch, c
         "翻译成功数量：2\n"
         "翻译失败数量：0\n"
         "待翻译数量：0\n"
-        f"翻译文件：{(tmp_path / 'translated_content_list.json').resolve()}\n"
+        f"翻译文件：{translated.resolve()}\n"
+        f"Markdown 文件：{rendered.resolve()}\n"
     )
 
 
@@ -222,6 +225,11 @@ def test_main_configures_logging_without_changing_summary_stdout(
         )()
 
     monkeypatch.setattr(cli, "process_translation_file", fake_process)
+    monkeypatch.setattr(
+        cli,
+        "render_content_list_file",
+        lambda source, output: None,
+    )
 
     assert cli.main(["--translate-only", str(normalized)]) == 0
 

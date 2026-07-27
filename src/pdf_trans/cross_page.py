@@ -31,6 +31,8 @@ def detect_cross_page_candidates(
             continue
         if previous.get("type") != "text" or next_item.get("type") != "text":
             continue
+        if "text_level" in previous or "text_level" in next_item:
+            continue
 
         previous_page_idx = previous.get("page_idx")
         next_page_idx = next_item.get("page_idx")

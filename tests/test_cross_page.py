@@ -81,24 +81,15 @@ def test_detect_cross_page_candidates_requires_consecutive_pages():
         assert detect_cross_page_candidates(items) == []
 
 
-def test_detector_does_not_skip_objects_but_still_detects_text_titles():
+@pytest.mark.parametrize("title_position", [0, 1])
+def test_detector_excludes_pairs_containing_text_level(title_position):
     items = [
-        {"type": "text", "text": "不会跨过图片", "page_idx": 0},
-        {"type": "image", "img_path": "images/a.jpg", "page_idx": 0},
         {"type": "text", "text": "上一页正文未结束", "page_idx": 1},
-        {
-            "type": "text",
-            "text": "下一页标题",
-            "text_level": 1,
-            "page_idx": 2,
-        },
+        {"type": "text", "text": "下一页文本", "page_idx": 2},
     ]
+    items[title_position]["text_level"] = None
 
-    candidates = detect_cross_page_candidates(items)
-
-    assert [(item["previous_index"], item["next_index"]) for item in candidates] == [
-        (2, 3)
-    ]
+    assert detect_cross_page_candidates(items) == []
 
 
 def test_detect_cross_page_candidates_skips_invalid_objects_and_fields():

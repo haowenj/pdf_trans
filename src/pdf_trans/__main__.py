@@ -8,6 +8,7 @@ from typing import Sequence
 from pdf_trans.client import DEFAULT_SVR_URL
 from pdf_trans.errors import PDFTransError
 from pdf_trans.logging_utils import configure_logging
+from pdf_trans.renderer import render_content_list_file
 from pdf_trans.workflow import process_pdf, process_translation_file
 
 LOGGER = logging.getLogger(__name__)
@@ -65,7 +66,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.translate_only is not None:
             result = process_translation_file(args.translate_only)
+            markdown_path = result.translated_path.with_name("rendered.md")
+            render_content_list_file(result.translated_path, markdown_path)
             _print_translation_summary(result.stats, result.translated_path)
+            print(f"Markdown 文件：{markdown_path.resolve()}")
             return 0
         result = process_pdf(args.pdf_path, svr_url=args.svr_url)
     except (PDFTransError, OSError) as exc:
