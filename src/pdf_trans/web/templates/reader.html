@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ task.original_filename }} · PDF Trans</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/vendor/katex/katex.min.css">
+  <script src="/static/vendor/katex/katex.min.js" defer></script>
+  <script src="/static/vendor/katex/auto-render.min.js" defer></script>
+  <script src="/static/reader.js" defer></script>
+</head>
+<body class="reader-page">
+  <header class="reader-toolbar">
+    <div>
+      <strong>{{ task.original_filename }}</strong>
+      <small>由 PDF Trans 生成 · rendered.md</small>
+    </div>
+    <nav>
+      <a class="button" href="/tasks/{{ task.id }}/markdown">下载 Markdown</a>
+      <button id="print-button" type="button" disabled>打印 / 导出 PDF</button>
+    </nav>
+  </header>
+  <article id="reader-article" class="reader-article">{{ content }}</article>
+</body>
+</html>

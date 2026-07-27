@@ -10,7 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from pdf_trans.web.config import WebSettings
 from pdf_trans.web.db import make_engine, make_session_factory, run_migrations
 from pdf_trans.web.repository import TaskRepository
+from pdf_trans.web.routes.files import router as files_router
 from pdf_trans.web.routes.logs import router as logs_router
+from pdf_trans.web.routes.pages import router as pages_router
 from pdf_trans.web.routes.tasks import router as tasks_router
 from pdf_trans.web.task_logging import TaskLogHandler
 from pdf_trans.web.task_runner import TaskRunner
@@ -64,6 +66,8 @@ def create_app(
         ),
         name="static",
     )
+    app.include_router(pages_router)
+    app.include_router(files_router)
     app.include_router(tasks_router)
     app.include_router(logs_router)
     return app
