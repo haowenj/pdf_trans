@@ -1,4 +1,16 @@
 data/
+.env
+.env.*
+!.env.example
+*.log
+logs/
+tmp/
+.cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
 .DS_Store
 .venv/
 __pycache__/

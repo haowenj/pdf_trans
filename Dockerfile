@@ -7,10 +7,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
 COPY pyproject.toml README.md ./
 COPY src ./src
 
-RUN python -m pip install --no-cache-dir '.[web]' \
+RUN python -m pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" '.[web]' \
     && useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/data/web \
     && chown -R appuser:appuser /app

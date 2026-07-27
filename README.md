@@ -107,6 +107,12 @@ TRANSLATION_MODEL=paper-translation-model
 docker compose up --build
 ```
 
+Dockerfile 默认使用清华 PyPI 镜像安装依赖；如需切换镜像，可在构建时覆盖：
+
+```bash
+docker compose build --build-arg PIP_INDEX_URL=https://pypi.org/simple
+```
+
 浏览器访问 `http://127.0.0.1:8000`。Compose 默认把宿主的 `8000` 映射到容器的
 `8000`；如需换端口，可在启动前设置：
 
