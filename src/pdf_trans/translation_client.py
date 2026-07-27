@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import math
+import os
 from typing import Any
 
 import httpx
@@ -19,8 +19,9 @@ TRANSLATION_SYSTEM_PROMPT = """你是一名化工工程学术论文翻译助手�
 - 术语翻译应符合化工论文表达；
 - 只返回译文，不返回解释或前缀。"""
 
-DEFAULT_TRANSLATION_TIMEOUT_SECONDS = 60.0
+DEFAULT_TRANSLATION_TIMEOUT_SECONDS = 120.0
 DEFAULT_TRANSLATION_MAX_RETRIES = 1
+DEFAULT_TRANSLATION_CONCURRENCY = 5
 
 
 def _parse_timeout(value: str) -> float:
@@ -51,6 +52,18 @@ def _parse_retries(value: str) -> int:
     return retries
 
 
+def _parse_positive_integer(name: str, value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise TranslationConfigError(
+            f"{name} 必须是大于 0 的整数"
+        ) from exc
+    if parsed <= 0 or str(parsed) != value.strip():
+        raise TranslationConfigError(f"{name} 必须是大于 0 的整数")
+    return parsed
+
+
 class OpenAICompatibleTranslator:
     def __init__(
         self,
@@ -60,6 +73,7 @@ class OpenAICompatibleTranslator:
         model: str,
         timeout_seconds: float = DEFAULT_TRANSLATION_TIMEOUT_SECONDS,
         max_retries: int = DEFAULT_TRANSLATION_MAX_RETRIES,
+        concurrency: int = DEFAULT_TRANSLATION_CONCURRENCY,
         http_client: httpx.Client | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -70,10 +84,15 @@ class OpenAICompatibleTranslator:
             raise TranslationConfigError(
                 "TRANSLATION_MAX_RETRIES 必须是大于等于 0 的整数"
             )
+        if type(concurrency) is not int or concurrency <= 0:
+            raise TranslationConfigError(
+                "TRANSLATION_CONCURRENCY 必须是大于 0 的整数"
+            )
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
+        self.concurrency = concurrency
         self._api_key = api_key
         self._owns_client = http_client is None
         self._http = http_client or httpx.Client(timeout=timeout_seconds)
@@ -103,12 +122,20 @@ class OpenAICompatibleTranslator:
                 str(DEFAULT_TRANSLATION_MAX_RETRIES),
             )
         )
+        concurrency = _parse_positive_integer(
+            "TRANSLATION_CONCURRENCY",
+            os.environ.get(
+                "TRANSLATION_CONCURRENCY",
+                str(DEFAULT_TRANSLATION_CONCURRENCY),
+            ),
+        )
         return cls(
             base_url=values["TRANSLATION_BASE_URL"],
             api_key=values["TRANSLATION_API_KEY"],
             model=values["TRANSLATION_MODEL"],
             timeout_seconds=timeout,
             max_retries=max_retries,
+            concurrency=concurrency,
         )
 
     def __enter__(self) -> "OpenAICompatibleTranslator":

@@ -5,6 +5,7 @@ import pytest
 
 from pdf_trans.errors import TranslationClientError, TranslationConfigError
 from pdf_trans.translation_client import (
+    DEFAULT_TRANSLATION_CONCURRENCY,
     DEFAULT_TRANSLATION_MAX_RETRIES,
     DEFAULT_TRANSLATION_TIMEOUT_SECONDS,
     OpenAICompatibleTranslator,
@@ -24,6 +25,52 @@ def test_from_env_reads_required_translation_configuration(monkeypatch):
     assert translator.timeout_seconds == DEFAULT_TRANSLATION_TIMEOUT_SECONDS
     assert translator.max_retries == DEFAULT_TRANSLATION_MAX_RETRIES
     translator.close()
+
+
+def test_from_env_uses_new_timeout_and_concurrency_defaults(monkeypatch):
+    monkeypatch.setenv("TRANSLATION_BASE_URL", "http://translate.example/v1")
+    monkeypatch.setenv("TRANSLATION_API_KEY", "secret")
+    monkeypatch.setenv("TRANSLATION_MODEL", "paper-model")
+    monkeypatch.delenv("TRANSLATION_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("TRANSLATION_MAX_RETRIES", raising=False)
+    monkeypatch.delenv("TRANSLATION_CONCURRENCY", raising=False)
+
+    translator = OpenAICompatibleTranslator.from_env()
+
+    assert translator.timeout_seconds == 120.0
+    assert translator.timeout_seconds == DEFAULT_TRANSLATION_TIMEOUT_SECONDS
+    assert translator.max_retries == DEFAULT_TRANSLATION_MAX_RETRIES
+    assert translator.concurrency == DEFAULT_TRANSLATION_CONCURRENCY == 5
+    translator.close()
+
+
+def test_from_env_reads_concurrency(monkeypatch):
+    monkeypatch.setenv("TRANSLATION_BASE_URL", "http://translate.example/v1")
+    monkeypatch.setenv("TRANSLATION_API_KEY", "secret")
+    monkeypatch.setenv("TRANSLATION_MODEL", "paper-model")
+    monkeypatch.setenv("TRANSLATION_CONCURRENCY", "8")
+
+    translator = OpenAICompatibleTranslator.from_env()
+
+    assert translator.concurrency == 8
+    translator.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["0", "-1", "1.5", "not-an-integer", "01"],
+)
+def test_from_env_rejects_invalid_concurrency(monkeypatch, value):
+    monkeypatch.setenv("TRANSLATION_BASE_URL", "configured")
+    monkeypatch.setenv("TRANSLATION_API_KEY", "configured")
+    monkeypatch.setenv("TRANSLATION_MODEL", "configured")
+    monkeypatch.setenv("TRANSLATION_CONCURRENCY", value)
+
+    with pytest.raises(
+        TranslationConfigError,
+        match="TRANSLATION_CONCURRENCY",
+    ):
+        OpenAICompatibleTranslator.from_env()
 
 
 def test_from_env_reads_timeout_and_retry_configuration(monkeypatch):
@@ -141,6 +188,10 @@ def test_translate_sends_compatible_request_and_returns_only_content():
             },
         ],
     }
+    assert set(seen["payload"]) == {"model", "messages"}
+    assert "reasoning" not in seen["payload"]
+    assert "reasoning_effort" not in seen["payload"]
+    assert "thinking" not in seen["payload"]
     for required in (
         "[38]",
         "[39–41]",
