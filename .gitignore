@@ -11,6 +11,9 @@ tmp/
 .coverage
 coverage.xml
 htmlcov/
+*.swp
+*.swo
+*~
 .DS_Store
 .venv/
 __pycache__/
