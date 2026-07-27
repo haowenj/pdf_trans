@@ -1,4 +1,5 @@
 from pathlib import Path
+import logging
 
 import pytest
 
@@ -150,7 +151,7 @@ def test_main_reports_expected_error(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert exit_code == 1
     assert captured.out == ""
-    assert "错误：PDF 文件不存在" in captured.err
+    assert captured.err == "\033[31m[ERROR]\033[0m 错误：PDF 文件不存在\n"
 
 
 def test_main_translate_only_prints_translation_summary(tmp_path, monkeypatch, capsys):
@@ -194,3 +195,36 @@ def test_main_requires_exactly_one_mode():
         cli.main([])
     with pytest.raises(SystemExit):
         cli.main(["paper.pdf", "--translate-only", "normalized_content_list.json"])
+
+
+def test_main_configures_logging_without_changing_summary_stdout(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    normalized = tmp_path / "normalized_content_list.json"
+
+    def fake_process(
+        path,
+        *,
+        translator=None,
+        max_retries=None,
+        concurrency=None,
+    ):
+        logging.getLogger("pdf_trans.workflow").info("工作流日志")
+        return type(
+            "Result",
+            (),
+            {
+                "translated_path": tmp_path / "translated_content_list.json",
+                "stats": TranslationStats(0, 0, 0, 0, 0, 0),
+            },
+        )()
+
+    monkeypatch.setattr(cli, "process_translation_file", fake_process)
+
+    assert cli.main(["--translate-only", str(normalized)]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == "\033[32m[INFO]\033[0m 工作流日志\n"
+    assert captured.out.startswith("text 对象总数：0\n")

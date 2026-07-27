@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import sys
+import logging
 from pathlib import Path
 from typing import Sequence
 
 from pdf_trans.client import DEFAULT_SVR_URL
 from pdf_trans.errors import PDFTransError
+from pdf_trans.logging_utils import configure_logging
 from pdf_trans.workflow import process_pdf, process_translation_file
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _print_group(title: str, counts: dict[str, int] | dict[int, int]) -> None:
@@ -58,6 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if (args.pdf_path is None) == (args.translate_only is None):
         build_parser().error("必须且只能指定 PDF 路径或 --translate-only")
+    configure_logging()
     try:
         if args.translate_only is not None:
             result = process_translation_file(args.translate_only)
@@ -65,7 +69,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         result = process_pdf(args.pdf_path, svr_url=args.svr_url)
     except (PDFTransError, OSError) as exc:
-        print(f"错误：{exc}", file=sys.stderr)
+        LOGGER.error("错误：%s", exc)
         return 1
 
     print(f"处理前数量：{result.before_count}")
