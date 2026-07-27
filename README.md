@@ -35,12 +35,14 @@ python -m pdf_trans /path/to/document.pdf \
 export TRANSLATION_BASE_URL="https://api.example.com/v1"
 export TRANSLATION_API_KEY="replace-with-api-key"
 export TRANSLATION_MODEL="paper-translation-model"
-export TRANSLATION_TIMEOUT_SECONDS="60"
+export TRANSLATION_TIMEOUT_SECONDS="120"
 export TRANSLATION_MAX_RETRIES="1"
+export TRANSLATION_CONCURRENCY="5"
 ```
 
 程序会在运行时读取前三个必需变量；`TRANSLATION_TIMEOUT_SECONDS` 是单次请求超时秒数，
-默认 60，必须为正数；`TRANSLATION_MAX_RETRIES` 是失败后的额外重试次数，默认 1。
+默认 120（2 分钟），必须为正数；`TRANSLATION_MAX_RETRIES` 是失败后的额外重试次数，
+默认 1；`TRANSLATION_CONCURRENCY` 是同时进行的翻译请求数，默认 5，必须是正整数。
 缺少必需变量或配置值非法时命令会报错并停止。
 
 MinerU 结果解压到项目的 `data/` 目录，并按以下顺序生成处理结果：
@@ -102,6 +104,22 @@ text 对象总数：<数量>
 每完成一个对象，结果都会原子写入输出文件。再次运行时，程序会先校验已有输出与
 `normalized_content_list.json` 的对象数量、顺序、`type` 和 `text`；校验通过后跳过
 已有 `success`，并重新处理 `pending` 和 `failed`。校验不通过会直接报错，不使用旧结果。
+
+翻译使用 5 个线程并发执行（可通过 `TRANSLATION_CONCURRENCY` 调整）。线程完成顺序
+不影响 JSON 中的原数组顺序；检查点由主线程串行原子写入。当前请求体只包含 `model`
+和 `messages`，不会主动发送 `reasoning`、`reasoning_effort` 或 `thinking` 参数。
+
+运行日志写入 stderr，最终统计写入 stdout。日志使用彩色级别前缀：INFO 为绿色、WARN
+为黄色、ERROR 为红色，并记录每个流程的开始、结束和耗时。例如：
+
+```text
+[INFO] 开始翻译 text 对象：按配置的线程数逐段调用 OpenAI 兼容接口
+[INFO] 第 12 段翻译完成：success，耗时 3.42 秒，译文 286 字符
+[WARN] 检测到第 18 段和第 19 段被分页分裂，将合并为一个段落
+[ERROR] 第 20 段翻译完成：failed，耗时 240.13 秒，错误：请求超时
+```
+
+日志不会输出 API Key、完整原文或完整译文。
 
 如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
 
