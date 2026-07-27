@@ -1,35 +1,84 @@
 # PDF Trans
 
 上传一个 PDF 到 MinerU 3.4.4 异步接口，下载解析结果，清洗并逐对象翻译 content
-list。
+list。项目同时提供命令行模式和单进程 Web 面板模式。
 
 ## 环境
 
 - Python 3.11+
-- MinerU 3.4.4 服务；默认地址为 `http://127.0.0.1:7100`
+- MinerU 3.4.4 服务；Web 默认地址为 `http://127.0.0.1:7100`
+- OpenAI 兼容翻译接口
 
 ## 安装
 
+命令行：
+
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e .
+python3 -m pip install -e .
 ```
 
-## 使用
+Web 面板：
 
 ```bash
-python -m pdf_trans /path/to/document.pdf
+python3 -m pip install -e '.[web]'
+```
+
+如果需要 MySQL：
+
+```bash
+python3 -m pip install pymysql
+export PDF_TRANS_DATABASE_URL='mysql+pymysql://user:password@127.0.0.1/pdf_trans?charset=utf8mb4'
+```
+
+MySQL 数据库需要预先创建好；Web 服务启动时会自动运行 Alembic 迁移。
+
+## 命令行使用
+
+```bash
+python3 -m pdf_trans /path/to/document.pdf
 ```
 
 连接其他地址的 MinerU：
 
 ```bash
-python -m pdf_trans /path/to/document.pdf \
+python3 -m pdf_trans /path/to/document.pdf \
   --svr-url http://mineru.example:7100
 ```
 
-配置 OpenAI 兼容翻译接口：
+如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
+
+```bash
+python3 -m pdf_trans --translate-only \
+  /path/to/normalized_content_list.json
+```
+
+## Web 面板使用
+
+```bash
+python3 -m pdf_trans.web
+```
+
+默认监听 `127.0.0.1:8000`。Web 面板是单进程、单任务队列：
+
+- 同一时刻只处理 1 个 PDF 任务；
+- 任务状态固定为 `queued`、`running`、`succeeded`、`failed`、`interrupted`；
+- 上传后立即入队，后台守护线程异步执行；
+- 任务运行期间，脚本日志会持久化并通过页面右侧 Console 实时展示；
+- 如果服务重启时存在 `running` 任务，启动后会自动标记为 `interrupted`；
+- 对 `failed` 或 `interrupted` 任务，页面会提供“继续”入口；
+- “继续”优先复用已有 `normalized_content_list.json`，直接从翻译阶段断点续跑；
+- 完成后可在新标签页预览 `rendered.md`，下载 Markdown，或使用浏览器“打印 / 导出
+  PDF”。
+
+Web 预览使用服务端 Markdown 渲染，保留 MinerU 生成的原生 HTML 表格；输出会经过
+HTML 安全清洗，只保留允许的标签和属性。公式使用本地 KaTeX 0.18.1 资源渲染，不依赖
+外网。图片等资源通过同源安全路由从任务目录读取。
+
+## 配置
+
+翻译接口变量：
 
 ```bash
 export TRANSLATION_BASE_URL="https://api.example.com/v1"
@@ -40,12 +89,33 @@ export TRANSLATION_MAX_RETRIES="1"
 export TRANSLATION_CONCURRENCY="5"
 ```
 
-程序会在运行时读取前三个必需变量；`TRANSLATION_TIMEOUT_SECONDS` 是单次请求超时秒数，
-默认 120（2 分钟），必须为正数；`TRANSLATION_MAX_RETRIES` 是失败后的额外重试次数，
-默认 1；`TRANSLATION_CONCURRENCY` 是同时进行的翻译请求数，默认 5，必须是正整数。
-缺少必需变量或配置值非法时命令会报错并停止。
+Web 变量：
 
-MinerU 结果解压到项目的 `data/` 目录，并按以下顺序生成处理结果：
+```bash
+export PDF_TRANS_WEB_DATA_DIR="/absolute/path/to/data/web"
+export PDF_TRANS_DATABASE_URL="sqlite:////absolute/path/to/data/web/pdf_trans.db"
+export PDF_TRANS_MAX_UPLOAD_MIB="200"
+export PDF_TRANS_MINERU_URL="http://127.0.0.1:7100"
+export PDF_TRANS_WEB_HOST="127.0.0.1"
+export PDF_TRANS_WEB_PORT="8000"
+```
+
+说明：
+
+- `TRANSLATION_BASE_URL`、`TRANSLATION_API_KEY`、`TRANSLATION_MODEL` 为翻译必需项；
+- `TRANSLATION_TIMEOUT_SECONDS` 默认 120，必须为正整数；
+- `TRANSLATION_MAX_RETRIES` 默认 1，表示失败后的额外重试次数；
+- `TRANSLATION_CONCURRENCY` 默认 5，控制单个翻译任务内部的并发请求数；
+- `PDF_TRANS_WEB_DATA_DIR` 默认项目根目录下的 `data/web`；
+- `PDF_TRANS_DATABASE_URL` 默认指向 `data/web/pdf_trans.db`；
+- `PDF_TRANS_MAX_UPLOAD_MIB` 默认 `200`；
+- `PDF_TRANS_MINERU_URL` 默认 `http://127.0.0.1:7100`；
+- `PDF_TRANS_WEB_HOST` 默认 `127.0.0.1`；
+- `PDF_TRANS_WEB_PORT` 默认 `8000`。
+
+## 输出文件
+
+MinerU 结果解压到数据目录，并按以下顺序生成处理结果：
 
 ```text
 content_list.json
@@ -56,28 +126,20 @@ content_list.json
   -> rendered.md
 ```
 
-命令输出处理前数量、过滤数量、处理后数量、清洗结果路径、内容统计、Markdown
-文件路径、跨页候选数量、候选报告路径、规范化后数量、规范化文件路径，以及翻译统计
-和翻译文件路径。
+Web 面板会把每个任务隔离在独立目录，例如：
 
-程序只删除以下内容：
+```text
+data/web/tasks/<task-id>/
+  upload/source.pdf
+  attempts/1/...
+  attempts/2/...
+```
 
-- `header`
-- `footer`
-- `page_number`
-- `type` 为 `text` 且 `text.strip()` 为空的条目
+命令行最终统计会输出处理前数量、过滤数量、处理后数量、清洗统计、Markdown 路径、
+跨页候选数量、规范化文件路径，以及翻译统计和翻译文件路径。Web 面板会把这些流程
+日志写入 Console，并把成功产物关联到对应任务。
 
-其他条目按原顺序、原字段保留。
-
-清洗完成后，命令行还会输出：
-
-- 清洗后每种 `type` 的数量；
-- 带 `text_level` 的 `text` 数量及按 `text_level` 的分组；
-- 每个 `page_idx` 的元素数量。
-
-统计结果只输出到终端，不会写入 `cleaned_content_list.json`，也不会创建额外的统计文件。
-
-## 论文翻译
+## 翻译行为
 
 翻译阶段只处理 `type` 为 `text` 的对象，每个对象单独调用一次 OpenAI 兼容接口：
 
@@ -88,94 +150,48 @@ content_list.json
 - 其他类型：完全原样输出。
 
 数组顺序、对象数量和原始 `text` 字段不会改变。正常结束时所有 text 对象都是
-`success` 或 `failed`，不会保留 `pending`。输出文件为同一数据目录下的
-`translated_content_list.json`。命令最后打印：
-
-```text
-text 对象总数：<数量>
-本次模型调用数量：<数量>
-跳过的已成功数量：<数量>
-翻译成功数量：<数量>
-翻译失败数量：<数量>
-待翻译数量：<数量>
-翻译文件：<路径>
-```
-
-每完成一个对象，结果都会原子写入输出文件。再次运行时，程序会先校验已有输出与
+`success` 或 `failed`，不会保留 `pending`。每完成一个对象，结果都会原子写入
+`translated_content_list.json`。再次运行时，程序会先校验已有输出与
 `normalized_content_list.json` 的对象数量、顺序、`type` 和 `text`；校验通过后跳过
-已有 `success`，并重新处理 `pending` 和 `failed`。校验不通过会直接报错，不使用旧结果。
+已有 `success`，并重新处理 `pending` 和 `failed`。
 
-翻译使用 5 个线程并发执行（可通过 `TRANSLATION_CONCURRENCY` 调整）。线程完成顺序
-不影响 JSON 中的原数组顺序；检查点由主线程串行原子写入。当前请求体只包含 `model`
-和 `messages`，不会主动发送 `reasoning`、`reasoning_effort` 或 `thinking` 参数。
-
-运行日志写入 stderr，最终统计写入 stdout。日志使用彩色级别前缀：INFO 为绿色、WARN
-为黄色、ERROR 为红色，并记录每个流程的开始、结束和耗时。例如：
-
-```text
-[INFO] 开始翻译 text 对象：按配置的线程数逐段调用 OpenAI 兼容接口
-[INFO] 第 12 段翻译完成：success，耗时 3.42 秒，译文 286 字符
-[WARN] 检测到第 18 段和第 19 段被分页分裂，将合并为一个段落
-[ERROR] 第 20 段翻译完成：failed，耗时 240.13 秒，错误：请求超时
-```
-
-日志不会输出 API Key、完整原文或完整译文。
-
-如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
-
-```bash
-python -m pdf_trans --translate-only \
-  /path/to/normalized_content_list.json
-```
+运行日志写入 stderr，最终统计写入 stdout。日志不会输出 API Key、完整原文或完整译文。
 
 ## Markdown 渲染
 
 `rendered.md` 按 `translated_content_list.json` 数组的原顺序输出以下内容：
 
-- `text`：成功翻译时输出 `translated_text`，并保留原有一级/二级标题层级；翻译失败、译文为空或旧格式对象时回退到原始 `text`；
+- `text`：成功翻译时输出 `translated_text`，并保留原有一级/二级标题层级；翻译失败、
+  译文为空或旧格式对象时回退到原始 `text`；
 - `ref_text`：原始参考文献段落；
 - `image` 和 `chart`：相对图片路径、图注和脚注；
 - `table`：图注、原始 HTML 表格和脚注；
 - `equation`：MinerU 提供的原始 LaTeX 文本。
 
-各内容片段之间保留空行。渲染过程不会修改
-`cleaned_content_list.json`、`normalized_content_list.json`、
-`translated_content_list.json`、`cross_page_candidates.json`，也不会把 HTML
-表格转换为 Markdown 表格。
-
-## 待办事项
-
-- 增加 `rendered.md` 的网页预览页面，通过 Markdown 解析器将文件转换为 HTML；
-- 开启 Markdown 解析器的原生 HTML 支持，使 `<table>`、`rowspan` 和 `colspan`
-  能按 MinerU 输出的表格结构正常展示；
-- 对渲染结果进行 HTML 安全清洗，只保留允许的标签和属性，避免不受信任内容造成
-  XSS；
-- 为表格补充边框、单元格间距和窄屏横向滚动样式，保证宽表格在桌面端与移动端均可
-  阅读；
-- 接入 KaTeX 或 MathJax，渲染正文及 HTML 表格单元格中的 LaTeX 公式；
-- 增加网页渲染测试，覆盖普通表格、合并单元格、超宽表格、公式和危险 HTML
-  过滤。
+Web reader 会把 `rendered.md` 渲染为安全 HTML，保留 `<table>`、`rowspan`、
+`colspan` 等结构，补充表格样式、图片自适应和打印样式，并用本地 KaTeX 渲染正文及
+表格中的公式。
 
 ## 跨页段落候选
 
-`cross_page_candidates.json` 只检查清洗数组中立即相邻的两个 `text` 对象。
-当后一个 `page_idx` 等于前一个加 1，且前一个文本忽略尾部空白后不以
-`. ! ? : ;` 结尾时，记录为疑似跨页段落。
+`cross_page_candidates.json` 只检查清洗数组中立即相邻的两个 `text` 对象。当后一个
+`page_idx` 等于前一个加 1，且前一个文本忽略尾部空白后不以 `. ! ? : ;` 结尾时，
+记录为疑似跨页段落。
 
-报告包含两个对象的零基数组索引、两个页码、原始文本和判断原因。候选检测和合并
-在同一次工作流中完成：合并步骤直接使用内存中的清洗数组和候选对象，不会重新读取
-`cross_page_candidates.json`。该 JSON 仍只作为诊断和人工检查报告。
+首尾相接的候选会构成一条链，按原始索引顺序合并为一个对象，只保留链首对象。合并对象
+保留链首的原有字段和 `page_idx`，并增加 `source_page_indices`、`source_bboxes`
+与 `merged_cross_page: true`。
 
-首尾相接的候选（例如 `0→1`、`1→2`）会构成一条链，按原始索引顺序合并为一个
-对象，只保留链首对象；多条互不相关的链分别处理。合并对象保留链首的原有字段和
-`page_idx`，并增加 `source_page_indices`、`source_bboxes` 与
-`merged_cross_page: true`。如果候选索引越界、不相邻，出现重复、分叉、汇聚或环，
-或者对象类型、页码不符合要求，工作流会终止并且不会写出
-`normalized_content_list.json`。
+## 当前限制
+
+- Web 服务目前只支持单进程、单任务串行执行；
+- 不提供任务取消、删除和鉴权；
+- 页面预览依赖浏览器自身的打印能力导出 PDF，不在服务端生成第二份 PDF；
+- Web 队列层暂未扩展为多任务并行方案。
 
 ## 测试
 
 ```bash
-python -m pip install -e '.[test]'
-pytest -v
+python3 -m pip install -e '.[test,web]'
+python3 -m pytest -v
 ```
