@@ -1,0 +1,25 @@
+services:
+  web:
+    build:
+      context: .
+    image: pdf-trans-web:local
+    ports:
+      - "${PDF_TRANS_WEB_PORT:-8000}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      PDF_TRANS_WEB_HOST: 0.0.0.0
+      PDF_TRANS_WEB_PORT: 8000
+      PDF_TRANS_WEB_DATA_DIR: /app/data/web
+      PDF_TRANS_DATABASE_URL: ${PDF_TRANS_DATABASE_URL:-sqlite:////app/data/web/pdf_trans.db}
+      PDF_TRANS_MAX_UPLOAD_MIB: ${PDF_TRANS_MAX_UPLOAD_MIB:-200}
+      PDF_TRANS_MINERU_URL: ${PDF_TRANS_MINERU_URL:-http://host.docker.internal:7100}
+      TRANSLATION_BASE_URL: ${TRANSLATION_BASE_URL:?set TRANSLATION_BASE_URL}
+      TRANSLATION_API_KEY: ${TRANSLATION_API_KEY:?set TRANSLATION_API_KEY}
+      TRANSLATION_MODEL: ${TRANSLATION_MODEL:?set TRANSLATION_MODEL}
+      TRANSLATION_TIMEOUT_SECONDS: ${TRANSLATION_TIMEOUT_SECONDS:-120}
+      TRANSLATION_MAX_RETRIES: ${TRANSLATION_MAX_RETRIES:-1}
+      TRANSLATION_CONCURRENCY: ${TRANSLATION_CONCURRENCY:-5}
+    volumes:
+      - ./data/web:/app/data/web
+    restart: unless-stopped
