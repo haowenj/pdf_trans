@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Trans</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body class="dashboard-page">
+  <header class="topbar">
+    <strong>PDF Trans</strong>
+    <span>MinerU · 单任务队列</span>
+  </header>
+  <main class="dashboard-shell">
+    <form id="upload-form">
+      <label id="upload-dropzone" class="upload-zone">
+        <strong>拖放 PDF 到这里</strong>
+        <span>或选择本地文件 · 最大 {{ max_upload_mib }} MiB</span>
+        <span class="button">选择 PDF</span>
+        <input id="pdf-input" name="pdf" type="file"
+               accept=".pdf,application/pdf" hidden>
+      </label>
+      <p id="upload-error" class="error" role="alert"></p>
+    </form>
+    <section>
+      <div class="section-heading">
+        <h1>解析任务</h1>
+        <span id="queue-summary"></span>
+      </div>
+      <ul id="task-list" class="task-list">
+      {% for task in tasks %}
+        <li class="task-row" data-task-id="{{ task.id }}"
+            data-filename="{{ task.original_filename }}">
+          <div>
+            <strong>{{ task.original_filename }}</strong>
+            <small>{{ task.created_at.isoformat() }} · 第 {{ task.attempt_count }} 次执行</small>
+          </div>
+          <span class="status status-{{ task.status }}">{{ task.status }}</span>
+          <div class="task-actions">
+            <button type="button" data-action="console">Console</button>
+            {% if task.status in ("failed", "interrupted") %}
+            <button type="button" data-action="resume">继续</button>
+            {% endif %}
+            {% if task.status == "succeeded" %}
+            <a class="button primary" href="/tasks/{{ task.id }}/view"
+               target="_blank" rel="noopener">查看</a>
+            {% endif %}
+          </div>
+        </li>
+      {% endfor %}
+      </ul>
+    </section>
+  </main>
+  <aside id="console-drawer" class="console-drawer"
+         aria-hidden="true" aria-label="任务 Console">
+    <header>
+      <div><strong>Console</strong><span id="console-title"></span></div>
+      <button id="console-close" type="button" aria-label="关闭">×</button>
+    </header>
+    <pre id="console-output" tabindex="0"></pre>
+    <footer>
+      <span id="console-connection">未连接</span>
+      <label><input id="console-autoscroll" type="checkbox" checked> 自动滚动</label>
+      <button id="console-copy" type="button">复制日志</button>
+    </footer>
+  </aside>
+  <script src="/static/dashboard.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,358 @@
+:root {
+  color: #172033;
+  background:
+    radial-gradient(circle at top right, #fff2d9 0, #fff2d900 32%),
+    linear-gradient(180deg, #f7fafc 0%, #eef3f8 100%);
+  font: 15px/1.5 "Avenir Next", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+.button {
+  border: 1px solid #c5d2e1;
+  border-radius: 8px;
+  background: white;
+  color: #172033;
+  padding: 7px 11px;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+button:focus-visible,
+.button:focus-visible,
+input:focus-visible,
+a:focus-visible {
+  outline: 3px solid #93c5fd;
+  outline-offset: 2px;
+}
+
+.button.primary {
+  background: #172033;
+  border-color: #172033;
+  color: white;
+}
+
+.topbar {
+  min-height: 58px;
+  padding: 0 24px;
+  background: linear-gradient(90deg, #172033 0%, #25344f 100%);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.topbar span {
+  color: #b9c7d8;
+  font-size: 13px;
+}
+
+.dashboard-shell {
+  width: min(1040px, calc(100% - 32px));
+  margin: 28px auto;
+}
+
+.upload-zone {
+  min-height: 160px;
+  border: 2px dashed #91a4bc;
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, #ffffff 0%, #f5f9ff 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 18px 38px #10203810;
+}
+
+.upload-zone.drag-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.upload-zone > span:not(.button) {
+  color: #5f7087;
+  font-size: 13px;
+}
+
+.error {
+  min-height: 24px;
+  color: #b91c1c;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-heading h1 {
+  font-size: 18px;
+}
+
+.section-heading span,
+small {
+  color: #5f7087;
+}
+
+.task-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.task-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) 0.7fr 1.2fr;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid #d9e2ec;
+  border-radius: 12px;
+  background: white;
+}
+
+.task-row strong,
+.task-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  font-weight: 650;
+}
+
+.status-queued {
+  color: #64748b;
+}
+
+.status-running {
+  color: #2563eb;
+}
+
+.status-succeeded {
+  color: #15803d;
+}
+
+.status-failed {
+  color: #b91c1c;
+}
+
+.status-interrupted {
+  color: #b45309;
+}
+
+.task-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.console-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(720px, 72vw);
+  transform: translateX(100%);
+  transition: transform 0.2s ease;
+  background: #121926;
+  color: #d8f8e6;
+  z-index: 20;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
+.console-drawer.open {
+  transform: translateX(0);
+}
+
+.console-drawer header,
+.console-drawer footer {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-color: #324055;
+}
+
+.console-drawer header {
+  border-bottom: 1px solid #324055;
+}
+
+.console-drawer footer {
+  border-top: 1px solid #324055;
+}
+
+.console-drawer header span {
+  display: block;
+  color: #9ab0c8;
+  font-size: 12px;
+}
+
+.console-drawer pre {
+  overflow: auto;
+  margin: 0;
+  padding: 16px;
+  font: 13px/1.65 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
+
+.log-info {
+  color: #86efac;
+}
+
+.log-warn,
+.log-warning {
+  color: #fde047;
+}
+
+.log-error,
+.log-critical {
+  color: #fca5a5;
+}
+
+@media (max-width: 720px) {
+  .task-row {
+    grid-template-columns: 1fr;
+  }
+
+  .task-actions {
+    justify-content: flex-start;
+  }
+
+  .console-drawer {
+    width: 100vw;
+  }
+}
+
+.reader-page {
+  background: #eef2f7;
+}
+
+.reader-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 10px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  background: white;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.reader-toolbar strong,
+.reader-toolbar small {
+  display: block;
+}
+
+.reader-toolbar nav {
+  display: flex;
+  gap: 8px;
+}
+
+.reader-article {
+  width: min(860px, calc(100% - 32px));
+  margin: 24px auto;
+  padding: 48px 56px;
+  background: white;
+  box-shadow: 0 8px 30px #0f172a18;
+  font: 17px/1.75 Georgia, "Noto Serif CJK SC", serif;
+}
+
+.reader-article img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 20px auto;
+}
+
+.reader-article table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  font-family: system-ui, sans-serif;
+}
+
+.reader-article th,
+.reader-article td {
+  border: 1px solid #94a3b8;
+  padding: 7px 9px;
+  text-align: left;
+}
+
+.reader-article th {
+  background: #f1f5f9;
+}
+
+.reader-article pre {
+  overflow-x: auto;
+  padding: 14px;
+  background: #f8fafc;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 16mm;
+  }
+
+  .reader-toolbar {
+    display: none !important;
+  }
+
+  .reader-page {
+    background: white;
+    padding: 0;
+  }
+
+  .reader-article {
+    max-width: none;
+    box-shadow: none;
+  }
+
+  .reader-article table {
+    display: table;
+    overflow: visible;
+    width: 100%;
+    font-size: 9pt;
+  }
+
+  .reader-article h1,
+  .reader-article h2,
+  .reader-article h3,
+  .reader-article img,
+  .reader-article table,
+  .reader-article .katex-display {
+    break-inside: avoid;
+  }
+}
+
+@media (max-width: 720px) {
+  .reader-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .reader-article {
+    width: 100%;
+    margin: 0;
+    padding: 24px 18px;
+    box-shadow: none;
+  }
+}
