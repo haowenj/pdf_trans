@@ -62,6 +62,54 @@ def test_render_items_renders_supported_types_in_order_without_mutation():
     assert items == original
 
 
+def test_render_items_uses_successful_translation_with_original_heading_level():
+    items = [
+        {
+            "type": "text",
+            "text": "English title",
+            "text_level": 1,
+            "translated_text": "中文标题",
+            "translation_status": "success",
+        },
+        {
+            "type": "text",
+            "text": "English body",
+            "translated_text": "中文正文",
+            "translation_status": "success",
+        },
+    ]
+    original = copy.deepcopy(items)
+
+    assert render_items(items) == "# 中文标题\n\n中文正文\n"
+    assert items == original
+
+
+@pytest.mark.parametrize(
+    "item",
+    [
+        {
+            "type": "text",
+            "text": "Failed source",
+            "translated_text": None,
+            "translation_status": "failed",
+            "translation_error": "timeout",
+        },
+        {
+            "type": "text",
+            "text": "Blank translation source",
+            "translated_text": "   ",
+            "translation_status": "success",
+        },
+        {
+            "type": "text",
+            "text": "Legacy source",
+        },
+    ],
+)
+def test_render_items_falls_back_to_source_text(item):
+    assert render_items([item]) == f"{item['text']}\n"
+
+
 def test_render_items_skips_invalid_values_and_uses_plain_text_for_other_levels():
     items = [
         {"type": "text", "text": "三级按正文", "text_level": 3},

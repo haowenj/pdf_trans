@@ -24,6 +24,12 @@ def _render_item(item: Any) -> list[str]:
     item_type = item.get("type")
     if item_type == "text":
         text = item.get("text")
+        translated_text = item.get("translated_text")
+        if (
+            item.get("translation_status") == "success"
+            and _is_non_blank_string(translated_text)
+        ):
+            text = translated_text
         if not _is_non_blank_string(text):
             return []
         text_level = item.get("text_level")
