@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import tempfile
+import time
 from collections import Counter
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from pdf_trans.errors import TranslationContentError
+from pdf_trans.logging_utils import logged_stage
+from pdf_trans.translation_client import DEFAULT_TRANSLATION_CONCURRENCY
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TextTranslator(Protocol):
@@ -25,6 +32,17 @@ class TranslationStats:
     success_count: int
     failed_count: int
     pending_count: int
+
+
+@dataclass(frozen=True)
+class TranslationOutcome:
+    index: int
+    section_number: int
+    status: Literal["success", "failed"]
+    translated_text: str | None
+    error: str | None
+    model_call_count: int
+    elapsed_seconds: float
 
 
 CheckpointWriter = Callable[[Path, list[dict[str, Any]]], None]
@@ -141,27 +159,100 @@ def _prepare_resumed_items(
 
 
 def _translate_one(
-    item: dict[str, Any], translator: TextTranslator, max_retries: int
-) -> int:
+    index: int,
+    section_number: int,
+    text: str,
+    translator: TextTranslator,
+    max_retries: int,
+) -> TranslationOutcome:
+    started = time.perf_counter()
     last_error: Exception | None = None
-    for _ in range(max_retries + 1):
+    total_attempts = max_retries + 1
+    for attempt in range(1, total_attempts + 1):
+        LOGGER.info(
+            "第 %d 段开始翻译：第 %d/%d 次调用",
+            section_number,
+            attempt,
+            total_attempts,
+        )
         try:
-            translated = translator.translate(item["text"])
+            translated = translator.translate(text)
             if not isinstance(translated, str) or not translated.strip():
                 raise ValueError("模型返回空译文")
         except Exception as exc:
             last_error = exc
-            continue
-        item["translated_text"] = translated
+            if attempt < total_attempts:
+                LOGGER.warning(
+                    "第 %d 段第 %d 次调用失败：%s，将重试",
+                    section_number,
+                    attempt,
+                    exc,
+                )
+                continue
+            elapsed = time.perf_counter() - started
+            error = str(exc) or exc.__class__.__name__
+            LOGGER.error(
+                "第 %d 段翻译完成：failed，耗时 %.2f 秒，错误：%s",
+                section_number,
+                elapsed,
+                error,
+            )
+            return TranslationOutcome(
+                index=index,
+                section_number=section_number,
+                status="failed",
+                translated_text=None,
+                error=error,
+                model_call_count=attempt,
+                elapsed_seconds=elapsed,
+            )
+        elapsed = time.perf_counter() - started
+        LOGGER.info(
+            "第 %d 段翻译完成：success，耗时 %.2f 秒，译文 %d 字符",
+            section_number,
+            elapsed,
+            len(translated),
+        )
+        return TranslationOutcome(
+            index=index,
+            section_number=section_number,
+            status="success",
+            translated_text=translated,
+            error=None,
+            model_call_count=attempt,
+            elapsed_seconds=elapsed,
+        )
+
+    raise AssertionError(f"第 {section_number} 段未产生翻译结果：{last_error}")
+
+
+def _apply_outcome(
+    item: dict[str, Any],
+    outcome: TranslationOutcome,
+) -> None:
+    if outcome.status == "success":
+        item["translated_text"] = outcome.translated_text
         item["translation_status"] = "success"
         item.pop("translation_error", None)
-        return _ + 1
-
-    assert last_error is not None
+        return
     item["translated_text"] = None
     item["translation_status"] = "failed"
-    item["translation_error"] = str(last_error) or last_error.__class__.__name__
-    return max_retries + 1
+    item["translation_error"] = outcome.error
+
+
+def _collect_translation_work(
+    items: list[dict[str, Any]],
+) -> list[tuple[int, int, str]]:
+    work: list[tuple[int, int, str]] = []
+    section_number = 0
+    for index, item in enumerate(items):
+        if item.get("type") != "text":
+            continue
+        section_number += 1
+        if item.get("translation_status") == "success":
+            continue
+        work.append((index, section_number, item["text"]))
+    return work
 
 
 def translate_content_list_file(
@@ -170,33 +261,80 @@ def translate_content_list_file(
     translator: TextTranslator,
     *,
     max_retries: int = 1,
+    concurrency: int = DEFAULT_TRANSLATION_CONCURRENCY,
     checkpoint_writer: CheckpointWriter | None = None,
 ) -> TranslationStats:
     if max_retries < 0:
         raise TranslationContentError("max_retries 不能为负数")
+    if type(concurrency) is not int or concurrency <= 0:
+        raise TranslationContentError("concurrency 必须是大于 0 的整数")
     source = Path(source)
     output = Path(output)
-    normalized = _read_object_array(source, "规范化内容")
-    if output.exists():
-        if not output.is_file():
-            raise TranslationContentError("断点文件不是普通文件")
-        existing = _read_object_array(output, "断点翻译结果")
-        items, skipped_success = _prepare_resumed_items(normalized, existing)
-    else:
-        items = _prepare_new_items(normalized)
-        skipped_success = 0
+    checkpoint_action = (
+        "校验已有 translated_content_list.json"
+        if output.exists()
+        else "创建新的 translated_content_list.json"
+    )
+    with logged_stage(
+        LOGGER,
+        "准备翻译断点",
+        checkpoint_action,
+    ) as checkpoint_stage:
+        normalized = _read_object_array(source, "规范化内容")
+        if output.exists():
+            if not output.is_file():
+                raise TranslationContentError("断点文件不是普通文件")
+            existing = _read_object_array(output, "断点翻译结果")
+            items, skipped_success = _prepare_resumed_items(
+                normalized,
+                existing,
+            )
+        else:
+            items = _prepare_new_items(normalized)
+            skipped_success = 0
 
-    writer = checkpoint_writer or write_json_atomic
-    writer(output, items)
-
-    model_calls = 0
-    for item in items:
-        if item.get("type") != "text":
-            continue
-        if item.get("translation_status") == "success":
-            continue
-        model_calls += _translate_one(item, translator, max_retries)
+        writer = checkpoint_writer or write_json_atomic
         writer(output, items)
+        text_count = sum(item.get("type") == "text" for item in items)
+        checkpoint_stage.set_result(
+            f"text 共 {text_count} 段，跳过已有 success {skipped_success} 段"
+        )
+
+    work = _collect_translation_work(items)
+    LOGGER.info(
+        "准备并发翻译：待处理 %d 段，并发数 %d",
+        len(work),
+        concurrency,
+    )
+    model_calls = 0
+    executor = ThreadPoolExecutor(
+        max_workers=concurrency,
+        thread_name_prefix="pdf-trans",
+    )
+    futures: list[Future[TranslationOutcome]] = [
+        executor.submit(
+            _translate_one,
+            index,
+            section_number,
+            text,
+            translator,
+            max_retries,
+        )
+        for index, section_number, text in work
+    ]
+    try:
+        for future in as_completed(futures):
+            outcome = future.result()
+            _apply_outcome(items[outcome.index], outcome)
+            model_calls += outcome.model_call_count
+            writer(output, items)
+    except BaseException:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
 
     counts = Counter(
         item.get("translation_status")
