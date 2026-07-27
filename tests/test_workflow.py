@@ -88,7 +88,7 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
         tmp_path / "data/paper/hybrid_auto/rendered.md"
     ).resolve()
     assert result.markdown_path.read_text(encoding="utf-8") == (
-        "正文\n\n"
+        "译文：正文\n\n"
         "![](images/a.jpg)\n"
     )
     assert result.output_path == (
@@ -178,7 +178,7 @@ def test_process_pdf_writes_cross_page_report_without_changing_other_outputs(
         }
     ]
     assert result.markdown_path.read_text(encoding="utf-8") == (
-        "上一页未结束 下一页继续。\n"
+        "译文：上一页未结束 下一页继续。\n"
     )
 
 

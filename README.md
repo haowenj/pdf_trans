@@ -130,17 +130,18 @@ python -m pdf_trans --translate-only \
 
 ## Markdown 渲染
 
-`rendered.md` 按 `normalized_content_list.json` 数组的原顺序输出以下内容：
+`rendered.md` 按 `translated_content_list.json` 数组的原顺序输出以下内容：
 
-- `text`：一级标题、二级标题或普通段落；
+- `text`：成功翻译时输出 `translated_text`，并保留原有一级/二级标题层级；翻译失败、译文为空或旧格式对象时回退到原始 `text`；
 - `ref_text`：原始参考文献段落；
 - `image` 和 `chart`：相对图片路径、图注和脚注；
 - `table`：图注、原始 HTML 表格和脚注；
 - `equation`：MinerU 提供的原始 LaTeX 文本。
 
 各内容片段之间保留空行。渲染过程不会修改
-`cleaned_content_list.json`、`cross_page_candidates.json`，也不会把 HTML 表格转换为
-Markdown 表格。
+`cleaned_content_list.json`、`normalized_content_list.json`、
+`translated_content_list.json`、`cross_page_candidates.json`，也不会把 HTML
+表格转换为 Markdown 表格。
 
 ## 跨页段落候选
 

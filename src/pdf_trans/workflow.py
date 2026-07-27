@@ -310,9 +310,12 @@ def _process_pdf_stages(
     with logged_stage(
         LOGGER,
         "渲染 Markdown",
-        "按规范化对象顺序生成 rendered.md",
+        "按翻译结果对象顺序生成 rendered.md",
     ) as stage:
-        render_content_list_file(normalized_path, markdown_path)
+        render_content_list_file(
+            translation_result.translated_path,
+            markdown_path,
+        )
         stage.set_result(f"输出文件 {markdown_path.resolve()}")
 
     return WorkflowResult(
