@@ -91,6 +91,41 @@ export PDF_TRANS_WEB_PORT="8088"
 python3 -m pdf_trans.web
 ```
 
+### Docker 单机部署
+
+项目提供单容器 Web 部署方式。先在项目根目录创建未提交的 `.env`，填入翻译接口配置：
+
+```dotenv
+TRANSLATION_BASE_URL=https://api.example.com/v1
+TRANSLATION_API_KEY=replace-with-api-key
+TRANSLATION_MODEL=paper-translation-model
+```
+
+然后构建并启动：
+
+```bash
+docker compose up --build
+```
+
+浏览器访问 `http://127.0.0.1:8000`。Compose 默认把宿主的 `8000` 映射到容器的
+`8000`；如需换端口，可在启动前设置：
+
+```bash
+PDF_TRANS_WEB_PORT=8088 docker compose up --build
+```
+
+任务数据库、上传 PDF、解析结果、日志和 Markdown 会持久化在宿主机的 `data/web`，
+执行 `docker compose down` 后仍会保留。默认情况下，容器通过
+`host.docker.internal:7100` 访问宿主机上的 MinerU；如果 MinerU 在其他地址，设置
+`PDF_TRANS_MINERU_URL`。其他 `PDF_TRANS_*` 和 `TRANSLATION_*` 变量也可以写入 `.env`，
+Compose 会传入容器。
+
+停止服务：
+
+```bash
+docker compose down
+```
+
 ## 配置
 
 翻译接口变量：
