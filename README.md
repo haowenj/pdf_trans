@@ -76,6 +76,21 @@ Web 预览使用服务端 Markdown 渲染，保留 MinerU 生成的原生 HTML �
 HTML 安全清洗，只保留允许的标签和属性。公式使用本地 KaTeX 0.18.1 资源渲染，不依赖
 外网。图片等资源通过同源安全路由从任务目录读取。
 
+如果要指定端口，例如改为 `8088`：
+
+```bash
+export PDF_TRANS_WEB_PORT="8088"
+python3 -m pdf_trans.web
+```
+
+如果要同时指定监听地址和端口，例如开放到局域网：
+
+```bash
+export PDF_TRANS_WEB_HOST="0.0.0.0"
+export PDF_TRANS_WEB_PORT="8088"
+python3 -m pdf_trans.web
+```
+
 ## 配置
 
 翻译接口变量：
