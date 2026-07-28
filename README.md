@@ -55,8 +55,9 @@ python3 -m pdf_trans --translate-only \
   /path/to/normalized_content_list.json
 ```
 
-每次 CLI 执行（包括 `--translate-only`）都会输出一个完整任务 UUID。可以用它查看
-本次任务的诊断产物，或在当前目录打包：
+每次 CLI 执行（包括 `--translate-only`）都会输出一个完整任务 UUID。使用 CLI 或 Web
+面板生成的完整任务 UUID，都可以通过下列命令查看对应任务的诊断产物；加上 `--zip`
+可在当前目录打包：
 
 ```bash
 python3 -m pdf_trans cat_task \
