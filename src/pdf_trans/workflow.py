@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -206,6 +207,19 @@ def _log_cross_page_candidates(
         )
 
 
+def _write_bytes_atomic(path: Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.unlink(missing_ok=True)
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(value)
+        os.replace(temporary, path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _process_pdf_stages(
     pdf_path: Path,
     *,
@@ -237,12 +251,19 @@ def _process_pdf_stages(
             archive_bytes = client.parse_pdf(resolved_pdf)
         stage.set_result(f"收到 {len(archive_bytes)} 字节 ZIP 数据")
 
+    archive_path = output_root / "mineru_result.zip"
+    _write_bytes_atomic(archive_path, archive_bytes)
+
     with logged_stage(
         LOGGER,
         "解压解析结果",
         f"解压 ZIP 到 {output_root} 并定位 content list",
     ) as stage:
-        extracted_paths = extract_zip(archive_bytes, output_root)
+        extracted_paths = extract_zip(
+            archive_bytes,
+            output_root,
+            reserved_paths=(archive_path.name,),
+        )
         source_path = find_content_list(extracted_paths)
         stage.set_result(
             f"解压 {len(extracted_paths)} 个文件，content list 为 {source_path}"

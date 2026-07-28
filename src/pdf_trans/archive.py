@@ -9,9 +9,15 @@ from zipfile import BadZipFile, ZipFile
 from pdf_trans.errors import ArchiveError
 
 
-def extract_zip(archive_bytes: bytes, output_dir: Path) -> tuple[Path, ...]:
+def extract_zip(
+    archive_bytes: bytes,
+    output_dir: Path,
+    *,
+    reserved_paths: Iterable[str] = (),
+) -> tuple[Path, ...]:
     output_root = output_dir.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
+    reserved = {PurePosixPath(path) for path in reserved_paths}
     extracted: list[Path] = []
 
     try:
@@ -21,6 +27,10 @@ def extract_zip(archive_bytes: bytes, output_dir: Path) -> tuple[Path, ...]:
                 member_path = PurePosixPath(normalized_name)
                 if member_path.is_absolute() or ".." in member_path.parts:
                     raise ArchiveError(f"ZIP 包含不安全路径：{member.filename}")
+                if member_path in reserved:
+                    raise ArchiveError(
+                        f"ZIP 包含保留路径：{member.filename}"
+                    )
 
                 target = (output_root / Path(*member_path.parts)).resolve()
                 if target != output_root and output_root not in target.parents:

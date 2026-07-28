@@ -54,6 +54,17 @@ def test_extract_zip_rejects_unsafe_paths(tmp_path, unsafe_name):
         extract_zip(archive_bytes, tmp_path / "data")
 
 
+def test_extract_zip_rejects_reserved_output_path(tmp_path):
+    archive_bytes = make_zip({"mineru_result.zip": b"collision"})
+
+    with pytest.raises(ArchiveError, match="保留路径"):
+        extract_zip(
+            archive_bytes,
+            tmp_path / "data",
+            reserved_paths=("mineru_result.zip",),
+        )
+
+
 @pytest.mark.parametrize("names, expected_count", [([], 0), (["a", "b"], 2)])
 def test_find_content_list_requires_exactly_one_match(
     tmp_path, names, expected_count

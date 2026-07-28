@@ -6,7 +6,7 @@ from zipfile import ZipFile
 import pytest
 
 from pdf_trans.cleaner import ContentStats
-from pdf_trans.errors import NormalizationError, WorkflowError
+from pdf_trans.errors import ArchiveError, NormalizationError, WorkflowError
 from pdf_trans.translation import TranslationStats
 from pdf_trans.workflow import process_pdf, process_translation_file
 
@@ -120,6 +120,22 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     assert (
         tmp_path / "data/paper/hybrid_auto/images/a.jpg"
     ).read_bytes() == b"image"
+    assert (tmp_path / "data/mineru_result.zip").read_bytes() == (
+        client.archive_bytes
+    )
+
+
+def test_process_pdf_preserves_raw_archive_when_extraction_fails(tmp_path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    archive_bytes = b"not a zip"
+    client = FakeMinerUClient(archive_bytes)
+    output_root = tmp_path / "data"
+
+    with pytest.raises(ArchiveError, match="无法解压"):
+        process_pdf(pdf, data_dir=output_root, client=client)
+
+    assert (output_root / "mineru_result.zip").read_bytes() == archive_bytes
 
 
 def test_process_pdf_writes_cross_page_report_without_changing_other_outputs(
