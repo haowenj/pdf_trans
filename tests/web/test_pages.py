@@ -1,7 +1,12 @@
 def test_dashboard_renders_confirmed_layout(
     web_client, repository
 ) -> None:
-    repository.create_task("a", "paper.pdf", "tasks/a/upload/source.pdf")
+    task_id = "12345678-1234-4abc-8def-1234567890ab"
+    repository.create_task(
+        task_id,
+        "paper.pdf",
+        f"tasks/{task_id}/upload/source.pdf",
+    )
 
     response = web_client.get("/")
 
@@ -11,6 +16,9 @@ def test_dashboard_renders_confirmed_layout(
     assert 'id="console-drawer"' in response.text
     assert "paper.pdf" in response.text
     assert "/static/dashboard.js" in response.text
+    assert "任务 UUID：12345678" in response.text
+    assert f'title="{task_id}"' in response.text
+    assert 'data-action="copy-id"' in response.text
 
 
 def test_dashboard_assets_define_responsive_drawer_and_status_styles(
@@ -24,3 +32,5 @@ def test_dashboard_assets_define_responsive_drawer_and_status_styles(
     assert "new EventSource('/tasks/events')" in script
     assert "navigator.clipboard.writeText" in script
     assert "scrollHeight" in script
+    assert "task.id.slice(0, 8)" in script
+    assert "action.dataset.action === 'copy-id'" in script

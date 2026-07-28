@@ -38,7 +38,15 @@ function renderTasks(tasks) {
     const detail = document.createElement('small');
     detail.textContent =
       `${new Date(task.created_at).toLocaleString()} · 第 ${task.attempt_count} 次执行`;
-    identity.append(name, detail);
+    const taskId = document.createElement('small');
+    taskId.className = 'task-id';
+    const shortId = document.createElement('code');
+    shortId.title = task.id;
+    shortId.textContent = `任务 UUID：${task.id.slice(0, 8)}`;
+    const copyId = actionButton('复制', 'copy-id');
+    copyId.setAttribute('aria-label', '复制完整任务 UUID');
+    taskId.append(shortId, copyId);
+    identity.append(name, detail, taskId);
     const status = document.createElement('span');
     status.className = `status status-${task.status}`;
     status.textContent = task.status;
@@ -147,6 +155,12 @@ taskList.addEventListener('click', (event) => {
     openConsole(row.dataset.taskId, row.dataset.filename || '');
   } else if (action.dataset.action === 'resume') {
     resumeTask(row.dataset.taskId);
+  } else if (action.dataset.action === 'copy-id') {
+    navigator.clipboard.writeText(row.dataset.taskId);
+    action.textContent = '已复制';
+    setTimeout(() => {
+      action.textContent = '复制';
+    }, 1200);
   }
 });
 

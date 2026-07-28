@@ -130,6 +130,23 @@ small {
   overflow-wrap: anywhere;
 }
 
+.task-id {
+  display: flex !important;
+  align-items: center;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.task-id code {
+  font-size: 12px;
+}
+
+.task-id button {
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+}
+
 .status {
   font-weight: 650;
 }
