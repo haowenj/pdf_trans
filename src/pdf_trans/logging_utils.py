@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from pathlib import Path
 from types import TracebackType
 from typing import TextIO
 
@@ -22,12 +23,37 @@ class ColorLevelFormatter(logging.Formatter):
         return f"{prefix} {record.getMessage()}"
 
 
-def configure_logging(stream: TextIO | None = None) -> None:
+class PlainLogFormatter(logging.Formatter):
+    def __init__(self) -> None:
+        super().__init__(
+            "%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%dT%H:%M:%S",
+        )
+
+
+def configure_logging(
+    stream: TextIO | None = None,
+    *,
+    log_path: Path | None = None,
+) -> None:
     package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
-    handler = logging.StreamHandler(stream or sys.stderr)
-    handler.setFormatter(ColorLevelFormatter())
+    console = logging.StreamHandler(stream or sys.stderr)
+    console.setFormatter(ColorLevelFormatter())
+    handlers: list[logging.Handler] = [console]
+    if log_path is not None:
+        file_handler = logging.FileHandler(
+            log_path,
+            mode="a",
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(PlainLogFormatter())
+        handlers.append(file_handler)
+    previous_handlers = package_logger.handlers[:]
     package_logger.handlers.clear()
-    package_logger.addHandler(handler)
+    for previous in previous_handlers:
+        previous.close()
+    for handler in handlers:
+        package_logger.addHandler(handler)
     package_logger.setLevel(logging.INFO)
     package_logger.propagate = False
 

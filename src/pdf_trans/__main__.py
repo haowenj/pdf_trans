@@ -10,6 +10,7 @@ from pdf_trans.client import DEFAULT_SVR_URL
 from pdf_trans.errors import PDFTransError
 from pdf_trans.logging_utils import configure_logging
 from pdf_trans.renderer import render_content_list_file
+from pdf_trans.task_runs import CliTask, finish_cli_task, start_cli_task
 from pdf_trans.workflow import (
     DEFAULT_DATA_DIR,
     process_pdf,
@@ -17,6 +18,26 @@ from pdf_trans.workflow import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _finish_task_safely(
+    task: CliTask,
+    status: str,
+    *,
+    referenced_artifacts: Sequence[Path] = (),
+    error: str | None = None,
+) -> bool:
+    try:
+        finish_cli_task(
+            task,
+            status,
+            referenced_artifacts=referenced_artifacts,
+            error=error,
+        )
+    except Exception as exc:
+        LOGGER.error("无法更新任务清单：%s", exc)
+        return False
+    return True
 
 
 def _print_group(title: str, counts: dict[str, int] | dict[int, int]) -> None:
@@ -67,23 +88,66 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if (args.pdf_path is None) == (args.translate_only is None):
         build_parser().error("必须且只能指定 PDF 路径或 --translate-only")
-    configure_logging()
+
+    task_type = "translate-only" if args.translate_only is not None else "full"
+    input_path = (
+        args.translate_only
+        if args.translate_only is not None
+        else args.pdf_path
+    )
+    assert input_path is not None
+    task = start_cli_task(
+        DEFAULT_DATA_DIR / "runs",
+        task_type,
+        input_path,
+        task_id=str(uuid.uuid4()),
+    )
+    print(f"任务 UUID：{task.task_id}")
+    configure_logging(log_path=task.log_path)
+
     try:
         if args.translate_only is not None:
             result = process_translation_file(args.translate_only)
             markdown_path = result.translated_path.with_name("rendered.md")
             render_content_list_file(result.translated_path, markdown_path)
+            if not _finish_task_safely(
+                task,
+                "succeeded",
+                referenced_artifacts=(
+                    args.translate_only,
+                    result.translated_path,
+                    markdown_path,
+                ),
+            ):
+                return 1
             _print_translation_summary(result.stats, result.translated_path)
             print(f"Markdown 文件：{markdown_path.resolve()}")
             return 0
-        run_data_dir = DEFAULT_DATA_DIR / "runs" / str(uuid.uuid4())
         result = process_pdf(
             args.pdf_path,
             svr_url=args.svr_url,
-            data_dir=run_data_dir,
+            data_dir=task.root,
         )
     except (PDFTransError, OSError) as exc:
+        _finish_task_safely(task, "failed", error=str(exc))
         LOGGER.error("错误：%s", exc)
+        return 1
+    except BaseException as exc:
+        _finish_task_safely(task, "failed", error=str(exc))
+        raise
+
+    if not _finish_task_safely(
+        task,
+        "succeeded",
+        referenced_artifacts=(
+            result.source_path,
+            result.output_path,
+            result.markdown_path,
+            result.candidates_path,
+            result.normalized_path,
+            result.translated_path,
+        ),
+    ):
         return 1
 
     print(f"处理前数量：{result.before_count}")

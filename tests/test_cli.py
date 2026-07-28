@@ -1,5 +1,7 @@
+import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -10,6 +12,9 @@ from pdf_trans.cleaner import ContentStats
 from pdf_trans.errors import WorkflowError
 from pdf_trans.translation import TranslationStats
 from pdf_trans.workflow import WorkflowResult
+
+
+TASK_ID = "12345678-1234-4abc-8def-1234567890ab"
 
 
 def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
@@ -55,6 +60,9 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
             translation_stats=TranslationStats(6, 4, 2, 2, 1, 3),
         )
 
+    data_root = tmp_path / "runtime"
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: UUID(TASK_ID))
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", data_root)
     monkeypatch.setattr(cli, "process_pdf", fake_process)
 
     exit_code = cli.main([str(pdf)])
@@ -63,9 +71,14 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     assert received["path"] == pdf
     assert received["svr_url"] == DEFAULT_SVR_URL
-    assert received["data_dir"].parent == cli.DEFAULT_DATA_DIR / "runs"
-    UUID(received["data_dir"].name)
+    assert received["data_dir"] == data_root / "runs" / f"cli-{TASK_ID}"
+    manifest = json.loads(
+        (received["data_dir"] / "task.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "succeeded"
+    assert (received["data_dir"] / "task.log").exists()
     assert captured.out == (
+        f"任务 UUID：{TASK_ID}\n"
         "处理前数量：10\n"
         "过滤数量：3\n"
         "处理后数量：7\n"
@@ -125,6 +138,8 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
             translation_stats=TranslationStats(0, 0, 0, 0, 0, 0),
         )
 
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: UUID(TASK_ID))
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", tmp_path / "runtime")
     monkeypatch.setattr(cli, "process_pdf", fake_process)
 
     exit_code = cli.main(
@@ -134,7 +149,7 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     assert received["svr_url"] == "http://mineru.example:7200"
     assert received["data_dir"].parent == cli.DEFAULT_DATA_DIR / "runs"
-    UUID(received["data_dir"].name)
+    assert received["data_dir"].name == f"cli-{TASK_ID}"
     captured = capsys.readouterr()
     assert captured.out.count("  （无）") == 3
     assert "跨页段落候选数量：0" in captured.out
@@ -148,18 +163,26 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     )
 
 
-def test_main_reports_expected_error(monkeypatch, capsys):
+def test_main_reports_expected_error(tmp_path, monkeypatch, capsys):
     def fail(path, *, svr_url, data_dir):
         raise WorkflowError("PDF 文件不存在")
 
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: UUID(TASK_ID))
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", tmp_path / "runtime")
     monkeypatch.setattr(cli, "process_pdf", fail)
 
     exit_code = cli.main(["missing.pdf"])
 
     captured = capsys.readouterr()
     assert exit_code == 1
-    assert captured.out == ""
+    assert captured.out == f"任务 UUID：{TASK_ID}\n"
     assert captured.err == "\033[31m[ERROR]\033[0m 错误：PDF 文件不存在\n"
+    manifest_path = (
+        tmp_path / "runtime/runs" / f"cli-{TASK_ID}" / "task.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["status"] == "failed"
+    assert manifest["error"] == "PDF 文件不存在"
 
 
 def test_main_uses_unique_run_directory_for_each_full_workflow(
@@ -184,7 +207,8 @@ def test_main_uses_unique_run_directory_for_each_full_workflow(
     assert received_data_dirs[0] != received_data_dirs[1]
     for data_dir in received_data_dirs:
         assert data_dir.parent == data_root / "runs"
-        UUID(data_dir.name)
+        assert data_dir.name.startswith("cli-")
+        UUID(data_dir.name.removeprefix("cli-"))
     capsys.readouterr()
 
 
@@ -208,6 +232,8 @@ def test_main_translate_only_renders_markdown(tmp_path, monkeypatch, capsys):
     def fake_render(source, output):
         calls.append(("render", source, output))
 
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: UUID(TASK_ID))
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", tmp_path / "runtime")
     monkeypatch.setattr(cli, "process_translation_file", fake_process)
     monkeypatch.setattr(cli, "render_content_list_file", fake_render)
 
@@ -216,6 +242,7 @@ def test_main_translate_only_renders_markdown(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     assert calls == [("translate", normalized), ("render", translated, rendered)]
     assert capsys.readouterr().out == (
+        f"任务 UUID：{TASK_ID}\n"
         "text 对象总数：2\n"
         "本次模型调用数量：3\n"
         "跳过的已成功数量：1\n"
@@ -225,6 +252,17 @@ def test_main_translate_only_renders_markdown(tmp_path, monkeypatch, capsys):
         f"翻译文件：{translated.resolve()}\n"
         f"Markdown 文件：{rendered.resolve()}\n"
     )
+    manifest_path = (
+        tmp_path / "runtime/runs" / f"cli-{TASK_ID}" / "task.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["task_type"] == "translate-only"
+    assert manifest["status"] == "succeeded"
+    assert manifest["referenced_artifacts"] == [
+        str(normalized.resolve()),
+        str(translated.resolve()),
+        str(rendered.resolve()),
+    ]
 
 
 def test_main_requires_exactly_one_mode():
@@ -258,6 +296,8 @@ def test_main_configures_logging_without_changing_summary_stdout(
             },
         )()
 
+    monkeypatch.setattr(cli.uuid, "uuid4", lambda: UUID(TASK_ID))
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", tmp_path / "runtime")
     monkeypatch.setattr(cli, "process_translation_file", fake_process)
     monkeypatch.setattr(
         cli,
@@ -269,4 +309,9 @@ def test_main_configures_logging_without_changing_summary_stdout(
 
     captured = capsys.readouterr()
     assert captured.err == "\033[32m[INFO]\033[0m 工作流日志\n"
-    assert captured.out.startswith("text 对象总数：0\n")
+    assert captured.out.startswith(f"任务 UUID：{TASK_ID}\n")
+    task_log = (
+        tmp_path / "runtime/runs" / f"cli-{TASK_ID}" / "task.log"
+    ).read_text(encoding="utf-8")
+    assert "[INFO] 工作流日志" in task_log
+    assert "\033[" not in task_log

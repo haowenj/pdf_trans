@@ -45,6 +45,19 @@ def test_configure_logging_replaces_handlers_instead_of_duplicating():
     assert second.getvalue().count("一次") == 1
 
 
+def test_configure_logging_writes_color_console_and_plain_file(tmp_path):
+    console = io.StringIO()
+    log_path = tmp_path / "task.log"
+    configure_logging(console, log_path=log_path)
+
+    logging.getLogger("pdf_trans.test").warning("需要排查")
+
+    assert console.getvalue() == "\033[33m[WARN]\033[0m 需要排查\n"
+    file_text = log_path.read_text(encoding="utf-8")
+    assert "[WARNING] 需要排查" in file_text
+    assert "\033[" not in file_text
+
+
 def test_logged_stage_reports_action_result_and_elapsed_time(
     monkeypatch,
     caplog,
