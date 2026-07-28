@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import uuid
 from pathlib import Path
 from typing import Sequence
 
@@ -9,7 +10,11 @@ from pdf_trans.client import DEFAULT_SVR_URL
 from pdf_trans.errors import PDFTransError
 from pdf_trans.logging_utils import configure_logging
 from pdf_trans.renderer import render_content_list_file
-from pdf_trans.workflow import process_pdf, process_translation_file
+from pdf_trans.workflow import (
+    DEFAULT_DATA_DIR,
+    process_pdf,
+    process_translation_file,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +76,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print_translation_summary(result.stats, result.translated_path)
             print(f"Markdown 文件：{markdown_path.resolve()}")
             return 0
-        result = process_pdf(args.pdf_path, svr_url=args.svr_url)
+        run_data_dir = DEFAULT_DATA_DIR / "runs" / str(uuid.uuid4())
+        result = process_pdf(
+            args.pdf_path,
+            svr_url=args.svr_url,
+            data_dir=run_data_dir,
+        )
     except (PDFTransError, OSError) as exc:
         LOGGER.error("错误：%s", exc)
         return 1

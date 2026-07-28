@@ -182,7 +182,16 @@ content_list.json
   -> rendered.md
 ```
 
-Web 面板会把每个任务隔离在独立目录，例如：
+CLI 每次完整解析都会生成独立 UUID 运行目录，避免同名 PDF 覆盖彼此的解析产物：
+
+```text
+data/runs/<run-uuid>/<mineru-archive-layout>/...
+```
+
+`--translate-only` 不生成新的运行目录，翻译文件和 Markdown 仍写在指定的
+`normalized_content_list.json` 旁。
+
+Web 面板继续按任务 UUID 和执行次数隔离，例如：
 
 ```text
 data/web/tasks/<task-id>/

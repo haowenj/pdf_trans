@@ -1,5 +1,6 @@
-from pathlib import Path
 import logging
+from pathlib import Path
+from uuid import UUID
 
 import pytest
 
@@ -29,9 +30,10 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     )
     received = {}
 
-    def fake_process(path, *, svr_url):
+    def fake_process(path, *, svr_url, data_dir):
         received["path"] = path
         received["svr_url"] = svr_url
+        received["data_dir"] = data_dir
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
             output_path=output,
@@ -59,7 +61,10 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert exit_code == 0
-    assert received == {"path": pdf, "svr_url": DEFAULT_SVR_URL}
+    assert received["path"] == pdf
+    assert received["svr_url"] == DEFAULT_SVR_URL
+    assert received["data_dir"].parent == cli.DEFAULT_DATA_DIR / "runs"
+    UUID(received["data_dir"].name)
     assert captured.out == (
         "处理前数量：10\n"
         "过滤数量：3\n"
@@ -96,8 +101,9 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     pdf.write_bytes(b"%PDF")
     received = {}
 
-    def fake_process(path, *, svr_url):
+    def fake_process(path, *, svr_url, data_dir):
         received["svr_url"] = svr_url
+        received["data_dir"] = data_dir
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
             output_path=Path("cleaned_content_list.json"),
@@ -127,6 +133,8 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
 
     assert exit_code == 0
     assert received["svr_url"] == "http://mineru.example:7200"
+    assert received["data_dir"].parent == cli.DEFAULT_DATA_DIR / "runs"
+    UUID(received["data_dir"].name)
     captured = capsys.readouterr()
     assert captured.out.count("  （无）") == 3
     assert "跨页段落候选数量：0" in captured.out
@@ -141,7 +149,7 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
 
 
 def test_main_reports_expected_error(monkeypatch, capsys):
-    def fail(path, *, svr_url):
+    def fail(path, *, svr_url, data_dir):
         raise WorkflowError("PDF 文件不存在")
 
     monkeypatch.setattr(cli, "process_pdf", fail)
@@ -152,6 +160,32 @@ def test_main_reports_expected_error(monkeypatch, capsys):
     assert exit_code == 1
     assert captured.out == ""
     assert captured.err == "\033[31m[ERROR]\033[0m 错误：PDF 文件不存在\n"
+
+
+def test_main_uses_unique_run_directory_for_each_full_workflow(
+    tmp_path, monkeypatch, capsys
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    data_root = tmp_path / "data"
+    received_data_dirs = []
+
+    def stop_after_capture(path, *, svr_url, data_dir=None):
+        received_data_dirs.append(data_dir)
+        raise WorkflowError("stop after capture")
+
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", data_root, raising=False)
+    monkeypatch.setattr(cli, "process_pdf", stop_after_capture)
+
+    assert cli.main([str(pdf)]) == 1
+    assert cli.main([str(pdf)]) == 1
+
+    assert len(received_data_dirs) == 2
+    assert received_data_dirs[0] != received_data_dirs[1]
+    for data_dir in received_data_dirs:
+        assert data_dir.parent == data_root / "runs"
+        UUID(data_dir.name)
+    capsys.readouterr()
 
 
 def test_main_translate_only_renders_markdown(tmp_path, monkeypatch, capsys):
