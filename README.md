@@ -38,6 +38,7 @@ MySQL 数据库需要预先创建好；Web 服务启动时会自动运行 Alembi
 
 ```bash
 python3 -m pdf_trans /path/to/document.pdf
+# 任务 UUID：12345678-1234-4abc-8def-1234567890ab
 ```
 
 连接其他地址的 MinerU：
@@ -54,6 +55,18 @@ python3 -m pdf_trans --translate-only \
   /path/to/normalized_content_list.json
 ```
 
+每次 CLI 执行（包括 `--translate-only`）都会输出一个完整任务 UUID。可以用它查看
+本次任务的诊断产物，或在当前目录打包：
+
+```bash
+python3 -m pdf_trans cat_task \
+  12345678-1234-4abc-8def-1234567890ab
+python3 -m pdf_trans cat_task \
+  12345678-1234-4abc-8def-1234567890ab --zip
+```
+
+ZIP 名称为 `pdf-trans-<uuid>.zip`；如果当前目录已有同名文件，命令会拒绝覆盖。
+
 ## Web 面板使用
 
 ```bash
@@ -66,6 +79,7 @@ python3 -m pdf_trans.web
 - 任务状态固定为 `queued`、`running`、`succeeded`、`failed`、`interrupted`；
 - 上传后立即入队，后台守护线程异步执行；
 - 任务运行期间，脚本日志会持久化并通过页面右侧 Console 实时展示；
+- 任务列表显示缩略 UUID，可一键复制完整 UUID；
 - 如果服务重启时存在 `running` 任务，启动后会自动标记为 `interrupted`；
 - 对 `failed` 或 `interrupted` 任务，页面会提供“继续”入口；
 - “继续”优先复用已有 `normalized_content_list.json`，直接从翻译阶段断点续跑；
@@ -185,24 +199,51 @@ content_list.json
 CLI 每次完整解析都会生成独立 UUID 运行目录，避免同名 PDF 覆盖彼此的解析产物：
 
 ```text
-data/runs/<run-uuid>/<mineru-archive-layout>/...
+data/runs/cli-<uuid>/
+  task.json
+  task.log
+  mineru_result.zip
+  <mineru-archive-layout>/...
 ```
 
-`--translate-only` 不生成新的运行目录，翻译文件和 Markdown 仍写在指定的
-`normalized_content_list.json` 旁。
+`task.json` 记录任务状态和产物引用，`task.log` 保存无终端颜色的完整流程日志，
+`mineru_result.zip` 是 MinerU 返回、尚未解压的原始结果包。
+
+`--translate-only` 同样会生成 `data/runs/cli-<uuid>/` 下的 `task.json` 和
+`task.log`，但翻译文件和 Markdown 仍写在指定的
+`normalized_content_list.json` 旁；清单只引用这次明确使用或生成的三个文件。
 
 Web 面板继续按任务 UUID 和执行次数隔离，例如：
 
 ```text
 data/web/tasks/<task-id>/
+  task.log
   upload/source.pdf
-  attempts/1/...
-  attempts/2/...
+  attempts/1/
+    mineru_result.zip
+    ...
+  attempts/2/
+    mineru_result.zip
+    ...
 ```
 
 命令行最终统计会输出处理前数量、过滤数量、处理后数量、清洗统计、Markdown 路径、
 跨页候选数量、规范化文件路径，以及翻译统计和翻译文件路径。Web 面板会把这些流程
-日志写入 Console，并把成功产物关联到对应任务。
+日志写入 Console 和任务目录，并把成功产物关联到对应任务。
+
+### 任务诊断
+
+`cat_task` 可按同一个纯 UUID 定位新旧 CLI 任务或 Web 任务，列出相对路径和文件大小。
+Web 任务会包含全部 `attempts/`；旧 Web 任务如果还没有 `task.log`，命令会尝试从
+数据库导出日志。正在执行的任务也可以查看和打包，但结果只是当时的文件快照。
+
+诊断列表和 ZIP 不包含上传的原始 PDF，也不会跟随符号链接。CLI
+`--translate-only` 的外部产物只按 `task.json` 中记录的精确文件加入，不会递归打包
+它们所在的整个目录。
+
+检查 Web 任务时，运行命令的环境必须使用与 Web 部署相同的
+`PDF_TRANS_WEB_DATA_DIR` 和 `PDF_TRANS_DATABASE_URL`。数据库暂时不可用时，命令仍会
+收集文件系统中的产物并给出警告。
 
 ## 翻译行为
 

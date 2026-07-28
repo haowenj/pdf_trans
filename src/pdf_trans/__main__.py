@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import uuid
 from pathlib import Path
 from typing import Sequence
@@ -10,7 +11,13 @@ from pdf_trans.client import DEFAULT_SVR_URL
 from pdf_trans.errors import PDFTransError
 from pdf_trans.logging_utils import configure_logging
 from pdf_trans.renderer import render_content_list_file
+from pdf_trans.task_diagnostics import (
+    collect_task_snapshot,
+    create_diagnostic_zip,
+    format_task_snapshot,
+)
 from pdf_trans.task_runs import CliTask, finish_cli_task, start_cli_task
+from pdf_trans.web.config import WebSettings
 from pdf_trans.workflow import (
     DEFAULT_DATA_DIR,
     process_pdf,
@@ -74,6 +81,43 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_cat_task_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m pdf_trans cat_task",
+        description="按 UUID 查看或打包 CLI/Web 任务诊断产物。",
+    )
+    parser.add_argument("task_uuid", help="任务的标准 UUID")
+    parser.add_argument(
+        "--zip",
+        action="store_true",
+        dest="create_zip",
+        help="在当前目录创建诊断 ZIP",
+    )
+    return parser
+
+
+def _cat_task_main(argv: Sequence[str]) -> int:
+    args = build_cat_task_parser().parse_args(argv)
+    try:
+        settings = WebSettings.from_env()
+        snapshot = collect_task_snapshot(
+            args.task_uuid,
+            cli_runs_dir=DEFAULT_DATA_DIR / "runs",
+            web_data_dir=settings.data_dir,
+            database_url=settings.database_url,
+        )
+        print(format_task_snapshot(snapshot), end="")
+        if args.create_zip:
+            result = create_diagnostic_zip(snapshot, Path.cwd())
+            for warning in result.warnings:
+                print(f"警告：{warning}")
+            print(f"诊断 ZIP：{result.path}")
+        return 0
+    except (PDFTransError, OSError, ValueError) as exc:
+        LOGGER.error("错误：%s", exc)
+        return 1
+
+
 def _print_translation_summary(stats, output_path: Path) -> None:
     print(f"text 对象总数：{stats.text_count}")
     print(f"本次模型调用数量：{stats.model_call_count}")
@@ -85,7 +129,12 @@ def _print_translation_summary(stats, output_path: Path) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments[:1] == ["cat_task"]:
+        configure_logging()
+        return _cat_task_main(arguments[1:])
+
+    args = build_parser().parse_args(arguments)
     if (args.pdf_path is None) == (args.translate_only is None):
         build_parser().error("必须且只能指定 PDF 路径或 --translate-only")
 

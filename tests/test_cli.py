@@ -315,3 +315,127 @@ def test_main_configures_logging_without_changing_summary_stdout(
     ).read_text(encoding="utf-8")
     assert "[INFO] 工作流日志" in task_log
     assert "\033[" not in task_log
+
+
+def test_cat_task_lists_snapshot_without_starting_cli_task(
+    tmp_path, monkeypatch, capsys
+):
+    snapshot = SimpleNamespace(
+        task_id=TASK_ID,
+        source="cli",
+        root=tmp_path,
+        entries=(),
+        warnings=(),
+    )
+    received = {}
+    monkeypatch.setattr(
+        cli,
+        "collect_task_snapshot",
+        lambda task_id, **kwargs: snapshot,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli,
+        "format_task_snapshot",
+        lambda value: "diagnostic listing\n",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.WebSettings,
+        "from_env",
+        lambda: SimpleNamespace(
+            data_dir=tmp_path / "web",
+            database_url="sqlite:///web.db",
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "start_cli_task",
+        lambda *args, **kwargs: received,
+    )
+
+    assert cli.main(["cat_task", TASK_ID]) == 0
+
+    assert capsys.readouterr().out == "diagnostic listing\n"
+    assert received == {}
+
+
+def test_cat_task_zip_writes_current_directory(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.chdir(tmp_path)
+    snapshot = SimpleNamespace(
+        task_id=TASK_ID,
+        source="web",
+        root=tmp_path / "web",
+        entries=(),
+        warnings=(),
+    )
+    monkeypatch.setattr(
+        cli,
+        "collect_task_snapshot",
+        lambda *args, **kwargs: snapshot,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli,
+        "format_task_snapshot",
+        lambda value: "files\n",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli,
+        "create_diagnostic_zip",
+        lambda value, output_dir: SimpleNamespace(
+            path=output_dir / f"pdf-trans-{TASK_ID}.zip",
+            warnings=(),
+        ),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        cli.WebSettings,
+        "from_env",
+        lambda: SimpleNamespace(
+            data_dir=tmp_path / "web",
+            database_url="sqlite:///web.db",
+        ),
+    )
+
+    assert cli.main(["cat_task", TASK_ID, "--zip"]) == 0
+    assert (
+        f"诊断 ZIP：{tmp_path}/pdf-trans-{TASK_ID}.zip"
+        in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize(
+    ("task_id", "message"),
+    [
+        ("not-a-uuid", "任务 UUID 格式错误"),
+        (TASK_ID, "未找到任务"),
+    ],
+)
+def test_cat_task_reports_diagnostic_errors(
+    tmp_path, monkeypatch, capsys, task_id, message
+):
+    monkeypatch.setattr(
+        cli.WebSettings,
+        "from_env",
+        lambda: SimpleNamespace(
+            data_dir=tmp_path / "web",
+            database_url="sqlite:///web.db",
+        ),
+    )
+
+    def fail(*args, **kwargs):
+        raise WorkflowError(message)
+
+    monkeypatch.setattr(
+        cli,
+        "collect_task_snapshot",
+        fail,
+        raising=False,
+    )
+
+    assert cli.main(["cat_task", task_id]) == 1
+    assert message in capsys.readouterr().err
