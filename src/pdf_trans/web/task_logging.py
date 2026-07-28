@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
+from pdf_trans.logging_utils import PlainLogFormatter
 from pdf_trans.web.repository import TaskRepository
 
 
 class TaskLogHandler(logging.Handler):
-    def __init__(self, repository: TaskRepository) -> None:
+    def __init__(
+        self,
+        repository: TaskRepository,
+        data_dir: Path | None = None,
+    ) -> None:
         super().__init__(logging.INFO)
         self.repository = repository
+        self.data_dir = data_dir
         self._active_task_id: str | None = None
+        self.setFormatter(PlainLogFormatter())
 
     def activate(self, task_id: str) -> None:
         with self.lock:
@@ -34,4 +42,13 @@ class TaskLogHandler(logging.Handler):
                     task_id, record.levelname, record.getMessage()
                 )
             except Exception as exc:
-                print(f"无法持久化任务日志：{exc}", file=sys.stderr)
+                print(f"无法持久化任务数据库日志：{exc}", file=sys.stderr)
+            if self.data_dir is not None:
+                try:
+                    log_path = self.data_dir / "tasks" / task_id / "task.log"
+                    log_path.parent.mkdir(parents=True, exist_ok=True)
+                    with log_path.open("a", encoding="utf-8") as handle:
+                        handle.write(self.format(record))
+                        handle.write("\n")
+                except Exception as exc:
+                    print(f"无法持久化任务文件日志：{exc}", file=sys.stderr)

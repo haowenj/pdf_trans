@@ -31,7 +31,11 @@ def create_app(
         engine = make_engine(settings.database_url)
         run_migrations(engine)
         repository = TaskRepository(make_session_factory(engine))
-    task_log_handler = None if worker is not None else TaskLogHandler(repository)
+    task_log_handler = (
+        None
+        if worker is not None
+        else TaskLogHandler(repository, settings.data_dir)
+    )
     if worker is None:
         worker = TaskWorker(
             repository,
