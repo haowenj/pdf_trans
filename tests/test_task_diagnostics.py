@@ -263,9 +263,40 @@ def test_format_includes_source_root_sizes_missing_and_warnings(tmp_path):
     text = format_task_snapshot(snapshot)
     assert f"任务 UUID：{TASK_ID}" in text
     assert "任务来源：cli" in text
-    assert "1 B  task.log" in text
+    assert "0.00 KB  task.log" in text
     assert "[missing] referenced/rendered.md" in text
     assert "警告：" in text
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        (500, "0.50 KB"),
+        (1_000_000, "1000.00 KB"),
+        (1_000_001, "1.00 MB"),
+        (1_250_000, "1.25 MB"),
+    ],
+)
+def test_format_uses_decimal_kb_and_switches_to_mb_above_threshold(
+    tmp_path,
+    size,
+    expected,
+):
+    snapshot = TaskSnapshot(
+        task_id=TASK_ID,
+        source="cli",
+        root=tmp_path,
+        entries=(
+            DiagnosticEntry(
+                "result.bin",
+                source_path=None,
+                inline_bytes=b"x" * size,
+            ),
+        ),
+        warnings=(),
+    )
+
+    assert f"{expected}  result.bin" in format_task_snapshot(snapshot)
 
 
 def test_zip_preserves_layout_virtual_log_and_never_overwrites(tmp_path):

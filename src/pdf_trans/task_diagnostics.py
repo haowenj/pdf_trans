@@ -220,6 +220,13 @@ def collect_task_snapshot(
     )
 
 
+def _format_file_size(size: int) -> str:
+    size_kb = size / 1000
+    if size_kb > 1000:
+        return f"{size_kb / 1000:.2f} MB"
+    return f"{size_kb:.2f} KB"
+
+
 def format_task_snapshot(snapshot: TaskSnapshot) -> str:
     lines = [
         f"任务来源：{snapshot.source}",
@@ -235,7 +242,9 @@ def format_task_snapshot(snapshot: TaskSnapshot) -> str:
         if entry.missing or size is None:
             lines.append(f"  [missing] {entry.display_path}")
         else:
-            lines.append(f"  {size} B  {entry.display_path}")
+            lines.append(
+                f"  {_format_file_size(size)}  {entry.display_path}"
+            )
     for warning in snapshot.warnings:
         lines.append(f"警告：{warning}")
     return "\n".join(lines) + "\n"
