@@ -11,7 +11,11 @@ from pdf_trans.cleaner import (
     ContentStats,
     clean_content_list_file_with_items,
 )
-from pdf_trans.client import DEFAULT_SVR_URL, MinerUClient
+from pdf_trans.client import (
+    DEFAULT_MINERU_BACKEND,
+    DEFAULT_SVR_URL,
+    MinerUClient,
+)
 from pdf_trans.cross_page import (
     detect_cross_page_candidates,
     write_cross_page_candidates_file,
@@ -224,6 +228,8 @@ def _process_pdf_stages(
     pdf_path: Path,
     *,
     svr_url: str,
+    mineru_backend: str,
+    mineru_server_url: str | None,
     data_dir: Path | None,
     client: PDFParser | None,
     translator: TextTranslator | None,
@@ -245,7 +251,11 @@ def _process_pdf_stages(
         "上传 PDF、轮询解析状态并下载 ZIP",
     ) as stage:
         if client is None:
-            with MinerUClient(svr_url=svr_url) as mineru_client:
+            with MinerUClient(
+                svr_url=svr_url,
+                backend=mineru_backend,
+                server_url=mineru_server_url,
+            ) as mineru_client:
                 archive_bytes = mineru_client.parse_pdf(resolved_pdf)
         else:
             archive_bytes = client.parse_pdf(resolved_pdf)
@@ -360,6 +370,8 @@ def process_pdf(
     pdf_path: Path,
     *,
     svr_url: str = DEFAULT_SVR_URL,
+    mineru_backend: str = DEFAULT_MINERU_BACKEND,
+    mineru_server_url: str | None = None,
     data_dir: Path | None = None,
     client: PDFParser | None = None,
     translator: TextTranslator | None = None,
@@ -374,6 +386,8 @@ def process_pdf(
         result = _process_pdf_stages(
             pdf_path,
             svr_url=svr_url,
+            mineru_backend=mineru_backend,
+            mineru_server_url=mineru_server_url,
             data_dir=data_dir,
             client=client,
             translator=translator,

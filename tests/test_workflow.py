@@ -287,7 +287,9 @@ def test_process_pdf_does_not_write_normalized_when_validation_fails(
     ) == invalid_candidates
 
 
-def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
+def test_process_pdf_passes_mineru_config_to_created_client(
+    tmp_path, monkeypatch
+):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
     archive_bytes = make_result_zip([{"type": "text", "text": "正文"}])
@@ -295,8 +297,12 @@ def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
     translator = FakeTranslator()
 
     class ContextClient:
-        def __init__(self, *, svr_url):
-            received["svr_url"] = svr_url
+        def __init__(self, *, svr_url, backend, server_url):
+            received.update(
+                svr_url=svr_url,
+                backend=backend,
+                server_url=server_url,
+            )
 
         def __enter__(self):
             return self
@@ -312,11 +318,17 @@ def test_process_pdf_passes_svr_url_to_created_client(tmp_path, monkeypatch):
     process_pdf(
         pdf,
         svr_url="http://mineru.internal:7200",
+        mineru_backend="hybrid-http-client",
+        mineru_server_url="http://gpustack:8000",
         data_dir=tmp_path / "data",
         translator=translator,
     )
 
-    assert received["svr_url"] == "http://mineru.internal:7200"
+    assert received == {
+        "svr_url": "http://mineru.internal:7200",
+        "backend": "hybrid-http-client",
+        "server_url": "http://gpustack:8000",
+    }
 
 
 @pytest.mark.parametrize(
