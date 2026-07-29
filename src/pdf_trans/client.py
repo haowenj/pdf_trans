@@ -5,29 +5,66 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import httpx
 
-from pdf_trans.errors import MinerUClientError
+from pdf_trans.errors import MinerUClientError, MinerUConfigError
 
 DEFAULT_SVR_URL = "http://127.0.0.1:7100"
+DEFAULT_MINERU_BACKEND = "hybrid-engine"
+REMOTE_MINERU_BACKEND = "hybrid-http-client"
+SUPPORTED_MINERU_BACKENDS = (
+    DEFAULT_MINERU_BACKEND,
+    REMOTE_MINERU_BACKEND,
+)
 POLL_INTERVAL_SECONDS = 2.0
 TASK_TIMEOUT_SECONDS = 30 * 60
 
-PARSE_FORM = {
-    "backend": "hybrid-engine",
-    "parse_method": "auto",
-    "effort": "medium",
-    "formula_enable": "true",
-    "table_enable": "true",
-    "return_md": "false",
-    "return_middle_json": "false",
-    "return_model_output": "false",
-    "return_content_list": "true",
-    "return_images": "true",
-    "response_format_zip": "true",
-}
+BASE_PARSE_FORM = MappingProxyType(
+    {
+        "parse_method": "auto",
+        "effort": "medium",
+        "formula_enable": "true",
+        "table_enable": "true",
+        "image_analysis": "false",
+        "return_md": "false",
+        "return_middle_json": "false",
+        "return_model_output": "false",
+        "return_content_list": "true",
+        "return_images": "true",
+        "response_format_zip": "true",
+    }
+)
+
+
+@dataclass(frozen=True)
+class MinerUBackendConfig:
+    backend: str
+    server_url: str | None
+
+
+def resolve_mineru_backend_config(
+    backend: str = DEFAULT_MINERU_BACKEND,
+    server_url: str | None = None,
+) -> MinerUBackendConfig:
+    if backend not in SUPPORTED_MINERU_BACKENDS:
+        allowed = ", ".join(SUPPORTED_MINERU_BACKENDS)
+        raise MinerUConfigError(
+            "PDF_TRANS_MINERU_BACKEND "
+            f"必须是以下值之一：{allowed}；当前值：{backend!r}"
+        )
+
+    normalized_url = (server_url or "").strip().rstrip("/")
+    if backend == REMOTE_MINERU_BACKEND:
+        if not normalized_url:
+            raise MinerUConfigError(
+                "PDF_TRANS_MINERU_SERVER_URL 在 "
+                "hybrid-http-client 模式下不能为空"
+            )
+        return MinerUBackendConfig(backend, normalized_url)
+    return MinerUBackendConfig(backend, None)
 
 
 @dataclass(frozen=True)
@@ -42,11 +79,17 @@ class MinerUClient:
         self,
         *,
         svr_url: str = DEFAULT_SVR_URL,
+        backend: str = DEFAULT_MINERU_BACKEND,
+        server_url: str | None = None,
         http_client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._svr_url = svr_url.rstrip("/")
+        self._backend_config = resolve_mineru_backend_config(
+            backend,
+            server_url,
+        )
         self._owns_client = http_client is None
         self._http = http_client or httpx.Client(
             timeout=httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0),
@@ -70,12 +113,19 @@ class MinerUClient:
         self.wait_for_completion(submission)
         return self.download_result(submission)
 
+    def _parse_form(self) -> dict[str, str]:
+        form = dict(BASE_PARSE_FORM)
+        form["backend"] = self._backend_config.backend
+        if self._backend_config.server_url is not None:
+            form["server_url"] = self._backend_config.server_url
+        return form
+
     def submit(self, pdf_path: Path) -> TaskSubmission:
         try:
             with pdf_path.open("rb") as pdf_file:
                 response = self._http.post(
                     f"{self._svr_url}/tasks",
-                    data=PARSE_FORM,
+                    data=self._parse_form(),
                     files={
                         "files": (
                             pdf_path.name,

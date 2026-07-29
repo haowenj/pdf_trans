@@ -1,8 +1,12 @@
 import httpx
 import pytest
 
-from pdf_trans.client import MinerUClient
-from pdf_trans.errors import MinerUClientError
+from pdf_trans.client import (
+    DEFAULT_MINERU_BACKEND,
+    MinerUClient,
+    resolve_mineru_backend_config,
+)
+from pdf_trans.errors import MinerUClientError, MinerUConfigError
 
 
 def test_parse_pdf_submits_polls_and_downloads_zip(tmp_path):
@@ -52,6 +56,7 @@ def test_parse_pdf_submits_polls_and_downloads_zip(tmp_path):
         "effort": "medium",
         "formula_enable": "true",
         "table_enable": "true",
+        "image_analysis": "false",
         "return_md": "false",
         "return_middle_json": "false",
         "return_model_output": "false",
@@ -61,6 +66,65 @@ def test_parse_pdf_submits_polls_and_downloads_zip(tmp_path):
     }.items():
         assert f'name="{field}"'.encode() in seen_post_body
         assert value.encode() in seen_post_body
+    assert b'name="server_url"' not in seen_post_body
+
+
+def test_submit_uses_remote_hybrid_backend_and_server_url(tmp_path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    seen_post_body = b""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal seen_post_body
+        seen_post_body = request.read()
+        return httpx.Response(
+            202,
+            json={
+                "task_id": "remote-1",
+                "status_url": "http://test/tasks/remote-1",
+                "result_url": "http://test/tasks/remote-1/result",
+            },
+        )
+
+    client = MinerUClient(
+        backend="hybrid-http-client",
+        server_url="http://gpustack:8000/",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    client.submit(pdf)
+
+    assert b'name="backend"' in seen_post_body
+    assert b"hybrid-http-client" in seen_post_body
+    assert b'name="server_url"' in seen_post_body
+    assert b"http://gpustack:8000" in seen_post_body
+    assert b'name="image_analysis"' in seen_post_body
+    assert b"false" in seen_post_body
+
+
+def test_resolve_backend_defaults_to_local_and_ignores_server_url():
+    config = resolve_mineru_backend_config(
+        DEFAULT_MINERU_BACKEND,
+        "http://unused.example/",
+    )
+
+    assert config.backend == "hybrid-engine"
+    assert config.server_url is None
+
+
+@pytest.mark.parametrize(
+    ("backend", "server_url", "message"),
+    [
+        ("pipeline", None, "PDF_TRANS_MINERU_BACKEND"),
+        ("hybrid-http-client", None, "PDF_TRANS_MINERU_SERVER_URL"),
+        ("hybrid-http-client", "  ", "PDF_TRANS_MINERU_SERVER_URL"),
+    ],
+)
+def test_resolve_backend_rejects_invalid_configuration(
+    backend, server_url, message
+):
+    with pytest.raises(MinerUConfigError, match=message):
+        resolve_mineru_backend_config(backend, server_url)
 
 
 def test_parse_pdf_reports_failed_task(tmp_path):
