@@ -78,6 +78,33 @@ def resolve_stored_path(data_dir: Path, relative_path: str) -> Path:
     return candidate
 
 
+def delete_task_directory(data_dir: Path, task_id: str) -> None:
+    identifier = Path(task_id)
+    if (
+        identifier.is_absolute()
+        or len(identifier.parts) != 1
+        or identifier.parts[0] in {"", ".", ".."}
+    ):
+        raise StorageError("任务目录路径越界")
+
+    tasks_root = (data_dir / "tasks").resolve()
+    unresolved = tasks_root / identifier
+    if unresolved.is_symlink():
+        raise StorageError("任务目录路径越界")
+    target = unresolved.resolve()
+    if target.parent != tasks_root:
+        raise StorageError("任务目录路径越界")
+    if not target.exists():
+        return
+    if not target.is_dir():
+        raise StorageError("任务目录路径越界")
+
+    try:
+        shutil.rmtree(target)
+    except OSError as exc:
+        raise StorageError("无法删除任务文件") from exc
+
+
 def resolve_task_asset(markdown_path: Path, asset_path: str) -> Path:
     relative = Path(asset_path)
     if relative.is_absolute() or ".." in relative.parts:
