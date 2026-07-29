@@ -14,6 +14,7 @@ from typing import Any, Callable, Literal, Protocol
 
 from pdf_trans.errors import TranslationContentError
 from pdf_trans.logging_utils import logged_stage
+from pdf_trans.table_translation import prepare_table_translation
 from pdf_trans.translation_client import DEFAULT_TRANSLATION_CONCURRENCY
 
 LOGGER = logging.getLogger(__name__)
@@ -40,6 +41,17 @@ class TranslationOutcome:
     section_number: int
     status: Literal["success", "failed"]
     translated_text: str | None
+    error: str | None
+    model_call_count: int
+    elapsed_seconds: float
+
+
+@dataclass(frozen=True)
+class TableTranslationOutcome:
+    index: int
+    table_number: int
+    status: Literal["success", "failed"]
+    translated_table_body: str | None
     error: str | None
     model_call_count: int
     elapsed_seconds: float
@@ -94,6 +106,11 @@ def _same_identity(normalized: dict[str, Any], existing: dict[str, Any]) -> bool
             return False
         if normalized.get(field) != existing.get(field):
             return False
+    if normalized.get("type") == "table":
+        if ("table_body" in normalized) != ("table_body" in existing):
+            return False
+        if normalized.get("table_body") != existing.get("table_body"):
+            return False
     return True
 
 
@@ -104,7 +121,51 @@ def _prepare_new_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             item.pop("translated_text", None)
             item.pop("translation_error", None)
             item["translation_status"] = "pending"
+        elif item.get("type") == "table":
+            item.pop("translated_table_body", None)
+            item.pop("translation_error", None)
+            item["translation_status"] = "pending"
     return prepared
+
+
+def _restore_table_state(
+    item: dict[str, Any],
+    old: dict[str, Any],
+    index: int,
+) -> None:
+    status = old.get("translation_status")
+    if status is None:
+        item.pop("translated_table_body", None)
+        item.pop("translation_error", None)
+        item["translation_status"] = "pending"
+        return
+    if status == "success":
+        translated = old.get("translated_table_body")
+        if not isinstance(translated, str) or not translated.strip():
+            raise TranslationContentError(
+                f"断点文件第 {index} 个 success 表格缺少有效 "
+                "translated_table_body"
+            )
+        item["translated_table_body"] = translated
+        item["translation_status"] = "success"
+        item.pop("translation_error", None)
+        return
+    if status in {"pending", "failed"}:
+        item.pop("translated_table_body", None)
+        item["translation_status"] = status
+        if status == "failed":
+            error = old.get("translation_error")
+            if not isinstance(error, str) or not error.strip():
+                raise TranslationContentError(
+                    f"断点文件第 {index} 个 failed 表格状态字段无效"
+                )
+            item["translation_error"] = error
+        else:
+            item.pop("translation_error", None)
+        return
+    raise TranslationContentError(
+        f"断点文件第 {index} 个 table 对象的 translation_status 无效"
+    )
 
 
 def _prepare_resumed_items(
@@ -118,9 +179,13 @@ def _prepare_resumed_items(
     for index, (current, old) in enumerate(zip(normalized, existing)):
         if not _same_identity(current, old):
             raise TranslationContentError(
-                f"断点文件与规范化内容在第 {index} 个对象的 type 或 text 不一致"
+                f"断点文件与规范化内容在第 {index} 个对象的身份字段不一致"
             )
         item = copy.deepcopy(current)
+        if current.get("type") == "table":
+            _restore_table_state(item, old, index)
+            prepared.append(item)
+            continue
         if current.get("type") != "text":
             prepared.append(item)
             continue
@@ -226,6 +291,121 @@ def _translate_one(
     raise AssertionError(f"第 {section_number} 段未产生翻译结果：{last_error}")
 
 
+def _failed_table_outcome(
+    *,
+    index: int,
+    table_number: int,
+    error: Exception,
+    model_call_count: int,
+    started: float,
+) -> TableTranslationOutcome:
+    elapsed = time.perf_counter() - started
+    message = str(error) or error.__class__.__name__
+    LOGGER.error(
+        "第 %d 张表翻译完成：failed，耗时 %.2f 秒，错误：%s",
+        table_number,
+        elapsed,
+        message,
+    )
+    return TableTranslationOutcome(
+        index=index,
+        table_number=table_number,
+        status="failed",
+        translated_table_body=None,
+        error=message,
+        model_call_count=model_call_count,
+        elapsed_seconds=elapsed,
+    )
+
+
+def _translate_table_one(
+    index: int,
+    table_number: int,
+    table_body: Any,
+    translator: TextTranslator,
+    max_retries: int,
+) -> TableTranslationOutcome:
+    started = time.perf_counter()
+    try:
+        prepared = prepare_table_translation(table_body)
+    except Exception as exc:
+        return _failed_table_outcome(
+            index=index,
+            table_number=table_number,
+            error=exc,
+            model_call_count=0,
+            started=started,
+        )
+
+    if not prepared.nodes:
+        elapsed = time.perf_counter() - started
+        LOGGER.info(
+            "第 %d 张表无需翻译：success，耗时 %.2f 秒",
+            table_number,
+            elapsed,
+        )
+        return TableTranslationOutcome(
+            index=index,
+            table_number=table_number,
+            status="success",
+            translated_table_body=prepared.original_html,
+            error=None,
+            model_call_count=0,
+            elapsed_seconds=elapsed,
+        )
+
+    request = prepared.build_request()
+    total_attempts = max_retries + 1
+    for attempt in range(1, total_attempts + 1):
+        LOGGER.info(
+            "第 %d 张表开始批量翻译 %d 个节点：第 %d/%d 次调用",
+            table_number,
+            len(prepared.nodes),
+            attempt,
+            total_attempts,
+        )
+        try:
+            response = translator.translate(request)
+            if not isinstance(response, str) or not response.strip():
+                raise ValueError("模型返回空表格翻译结果")
+            translated = prepared.apply_response(response)
+        except Exception as exc:
+            if attempt < total_attempts:
+                LOGGER.warning(
+                    "第 %d 张表第 %d 次调用失败：%s，将重试",
+                    table_number,
+                    attempt,
+                    exc,
+                )
+                continue
+            return _failed_table_outcome(
+                index=index,
+                table_number=table_number,
+                error=exc,
+                model_call_count=attempt,
+                started=started,
+            )
+
+        elapsed = time.perf_counter() - started
+        LOGGER.info(
+            "第 %d 张表翻译完成：success，耗时 %.2f 秒，%d 个节点",
+            table_number,
+            elapsed,
+            len(prepared.nodes),
+        )
+        return TableTranslationOutcome(
+            index=index,
+            table_number=table_number,
+            status="success",
+            translated_table_body=translated,
+            error=None,
+            model_call_count=attempt,
+            elapsed_seconds=elapsed,
+        )
+
+    raise AssertionError(f"第 {table_number} 张表未产生翻译结果")
+
+
 def _apply_outcome(
     item: dict[str, Any],
     outcome: TranslationOutcome,
@@ -236,6 +416,20 @@ def _apply_outcome(
         item.pop("translation_error", None)
         return
     item["translated_text"] = None
+    item["translation_status"] = "failed"
+    item["translation_error"] = outcome.error
+
+
+def _apply_table_outcome(
+    item: dict[str, Any],
+    outcome: TableTranslationOutcome,
+) -> None:
+    if outcome.status == "success":
+        item["translated_table_body"] = outcome.translated_table_body
+        item["translation_status"] = "success"
+        item.pop("translation_error", None)
+        return
+    item.pop("translated_table_body", None)
     item["translation_status"] = "failed"
     item["translation_error"] = outcome.error
 
@@ -252,6 +446,21 @@ def _collect_translation_work(
         if item.get("translation_status") == "success":
             continue
         work.append((index, section_number, item["text"]))
+    return work
+
+
+def _collect_table_translation_work(
+    items: list[dict[str, Any]],
+) -> list[tuple[int, int, Any]]:
+    work: list[tuple[int, int, Any]] = []
+    table_number = 0
+    for index, item in enumerate(items):
+        if item.get("type") != "table":
+            continue
+        table_number += 1
+        if item.get("translation_status") == "success":
+            continue
+        work.append((index, table_number, item.get("table_body")))
     return work
 
 
@@ -301,9 +510,11 @@ def translate_content_list_file(
         )
 
     work = _collect_translation_work(items)
+    table_work = _collect_table_translation_work(items)
     LOGGER.info(
-        "准备并发翻译：待处理 %d 段，并发数 %d",
+        "准备并发翻译：待处理 %d 段、%d 张表，并发数 %d",
         len(work),
+        len(table_work),
         concurrency,
     )
     model_calls = 0
@@ -311,7 +522,7 @@ def translate_content_list_file(
         max_workers=concurrency,
         thread_name_prefix="pdf-trans",
     )
-    futures: list[Future[TranslationOutcome]] = [
+    futures: list[Future[TranslationOutcome | TableTranslationOutcome]] = [
         executor.submit(
             _translate_one,
             index,
@@ -322,10 +533,24 @@ def translate_content_list_file(
         )
         for index, section_number, text in work
     ]
+    futures.extend(
+        executor.submit(
+            _translate_table_one,
+            index,
+            table_number,
+            table_body,
+            translator,
+            max_retries,
+        )
+        for index, table_number, table_body in table_work
+    )
     try:
         for future in as_completed(futures):
             outcome = future.result()
-            _apply_outcome(items[outcome.index], outcome)
+            if isinstance(outcome, TableTranslationOutcome):
+                _apply_table_outcome(items[outcome.index], outcome)
+            else:
+                _apply_outcome(items[outcome.index], outcome)
             model_calls += outcome.model_call_count
             writer(output, items)
     except BaseException:
@@ -335,6 +560,13 @@ def translate_content_list_file(
         raise
     else:
         executor.shutdown(wait=True)
+
+    if any(
+        item.get("type") == "table"
+        and item.get("translation_status") == "pending"
+        for item in items
+    ):
+        raise TranslationContentError("正式翻译结束后仍存在 pending 表格")
 
     counts = Counter(
         item.get("translation_status")

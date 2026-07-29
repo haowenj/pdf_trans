@@ -411,3 +411,247 @@ def test_translate_content_list_file_rejects_invalid_input(tmp_path, content, me
             FakeTranslator([]),
             concurrency=1,
         )
+
+
+class JsonTableTranslator:
+    def __init__(self, translations):
+        self.translations = translations
+        self.received = []
+
+    def translate(self, text):
+        self.received.append(text)
+        payload = json.loads(text)
+        return json.dumps(
+            {
+                "translations": [
+                    {
+                        "id": item["id"],
+                        "text": self.translations[item["text"]],
+                    }
+                    for item in reversed(payload["items"])
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+
+def test_translate_file_batches_table_nodes_by_id_and_preserves_source_html(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = (
+        '<table><tr><th rowspan="2">Component</th>'
+        '<th colspan="2">Mass Fraction</th></tr>'
+        "<tr><td>Ethanol</td><td>100</td></tr></table>"
+    )
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+    translator = JsonTableTranslator(
+        {
+            "Component": "组分",
+            "Mass Fraction": "质量分数",
+            "Ethanol": "乙醇",
+        }
+    )
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=0,
+        concurrency=1,
+    )
+
+    assert len(translator.received) == 1
+    request = json.loads(translator.received[0])
+    assert [item["text"] for item in request["items"]] == [
+        "Component",
+        "Mass Fraction",
+        "Ethanol",
+    ]
+    result = read_items(output)[0]
+    assert result["table_body"] == table_body
+    assert result["translated_table_body"] == (
+        '<table><tr><th rowspan="2">组分</th>'
+        '<th colspan="2">质量分数</th></tr>'
+        "<tr><td>乙醇</td><td>100</td></tr></table>"
+    )
+    assert result["translation_status"] == "success"
+    assert stats == TranslationStats(0, 1, 0, 0, 0, 0)
+
+
+def test_numeric_only_table_makes_no_model_call_and_finishes_successfully(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = "<table><tr><td>123</td><td>45.6</td></tr></table>"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        FakeTranslator([]),
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["translation_status"] == "success"
+    assert result["translated_table_body"] == table_body
+    assert stats.model_call_count == 0
+
+
+class SelectiveTranslator:
+    def __init__(self):
+        self.received = []
+
+    def translate(self, text):
+        self.received.append(text)
+        if text == "Paragraph":
+            return "正文"
+        raise RuntimeError("table service unavailable")
+
+
+def test_table_translation_exception_falls_back_and_document_continues(
+    tmp_path,
+    caplog,
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = "<table><tr><td>Alpha</td></tr></table>"
+    source.write_text(
+        json.dumps(
+            [
+                {"type": "text", "text": "Paragraph"},
+                {"type": "table", "table_body": table_body},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    caplog.set_level(logging.INFO, logger="pdf_trans.translation")
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        SelectiveTranslator(),
+        max_retries=0,
+        concurrency=1,
+    )
+
+    result = read_items(output)
+    assert result[0]["translated_text"] == "正文"
+    assert result[0]["translation_status"] == "success"
+    assert result[1]["table_body"] == table_body
+    assert "translated_table_body" not in result[1]
+    assert result[1]["translation_status"] == "failed"
+    assert result[1]["translation_error"] == "table service unavailable"
+    assert stats == TranslationStats(1, 2, 0, 1, 0, 0)
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "第 1 张表翻译完成：failed" in messages
+    assert table_body not in messages
+
+
+@pytest.mark.parametrize(
+    "table_body",
+    [
+        "<table><tr><td>Alpha</tr></table>",
+        "<table><tr><td>Alpha</td></tr>",
+    ],
+)
+def test_invalid_table_html_falls_back_without_model_call(tmp_path, table_body):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+    translator = FakeTranslator([])
+
+    translate_content_list_file(
+        source,
+        output,
+        translator,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert translator.received == []
+    assert result["table_body"] == table_body
+    assert result["translation_status"] == "failed"
+    assert "HTML" in result["translation_error"]
+
+
+def test_resume_skips_successful_table_by_original_table_body(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = "<table><tr><td>Alpha</td></tr></table>"
+    translated_table_body = "<table><tr><td>阿尔法</td></tr></table>"
+    normalized = [{"type": "table", "table_body": table_body}]
+    source.write_text(json.dumps(normalized), encoding="utf-8")
+    output.write_text(
+        json.dumps(
+            [
+                {
+                    **normalized[0],
+                    "translated_table_body": translated_table_body,
+                    "translation_status": "success",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    translator = FakeTranslator([])
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        concurrency=1,
+    )
+
+    assert translator.received == []
+    assert read_items(output)[0]["translated_table_body"] == translated_table_body
+    assert stats == TranslationStats(0, 0, 0, 0, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "response_value",
+    [
+        json.dumps({"translations": []}),
+        json.dumps(
+            {
+                "translations": [
+                    {"id": "table-text-9999", "text": "错误 ID"}
+                ]
+            }
+        ),
+        "not json",
+    ],
+)
+def test_invalid_table_translation_response_falls_back(
+    tmp_path,
+    response_value,
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = "<table><tr><td>Alpha</td></tr></table>"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+
+    translate_content_list_file(
+        source,
+        output,
+        FakeTranslator([response_value]),
+        max_retries=0,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["table_body"] == table_body
+    assert "translated_table_body" not in result
+    assert result["translation_status"] == "failed"
+    assert result["translation_error"]
