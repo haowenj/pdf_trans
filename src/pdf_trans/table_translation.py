@@ -5,7 +5,6 @@ import re
 from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
-from typing import Any
 
 
 _TARGET_TAGS = frozenset({"td", "th", "caption"})
@@ -95,7 +94,6 @@ class _ParsedHTML:
 class _TableHTMLParser(HTMLParser):
     def __init__(self, source: str, *, collect_nodes: bool) -> None:
         super().__init__(convert_charrefs=False)
-        self._source = source
         self._collect_nodes = collect_nodes
         self._line_offsets = [0]
         for match in re.finditer(r"\n", source):
