@@ -3,11 +3,23 @@ from __future__ import annotations
 import shutil
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    File,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from pdf_trans.web.repository import InvalidTaskState, TaskNotFound
-from pdf_trans.web.storage import UploadValidationError, save_pdf_upload
+from pdf_trans.web.storage import (
+    StorageError,
+    UploadValidationError,
+    delete_task_directory,
+    save_pdf_upload,
+)
 from pdf_trans.web.streams import task_event_stream, task_to_dict
 
 router = APIRouter()
@@ -56,6 +68,26 @@ def resume_task(request: Request, task_id: str) -> JSONResponse:
         raise HTTPException(409, "当前任务状态不能继续") from exc
     request.app.state.worker.notify()
     return JSONResponse(task_to_dict(task), status_code=202)
+
+
+@router.delete("/tasks/{task_id}", status_code=204)
+def delete_task(request: Request, task_id: str) -> Response:
+    settings = request.app.state.settings
+    try:
+        request.app.state.repository.delete_task(
+            task_id,
+            cleanup=lambda: delete_task_directory(
+                settings.data_dir,
+                task_id,
+            ),
+        )
+    except TaskNotFound as exc:
+        raise HTTPException(404, "任务不存在") from exc
+    except InvalidTaskState as exc:
+        raise HTTPException(409, "当前任务状态不能删除") from exc
+    except StorageError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return Response(status_code=204)
 
 
 @router.get("/tasks/events")
