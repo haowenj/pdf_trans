@@ -53,6 +53,12 @@ def _render_item(item: Any) -> list[str]:
     if item_type == "table":
         parts = _string_list(item.get("table_caption"))
         table_body = item.get("table_body")
+        translated_table_body = item.get("translated_table_body")
+        if (
+            item.get("translation_status") == "success"
+            and _is_non_blank_string(translated_table_body)
+        ):
+            table_body = translated_table_body
         if _is_non_blank_string(table_body):
             parts.append(table_body)
         parts.extend(_string_list(item.get("table_footnote")))

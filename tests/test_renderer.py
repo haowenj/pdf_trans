@@ -173,3 +173,48 @@ def test_render_content_list_file_rejects_invalid_input(
 
     with pytest.raises(ContentListError, match=message):
         render_content_list_file(source, tmp_path / "rendered.md")
+
+
+def test_render_items_uses_successful_translated_table_body():
+    item = {
+        "type": "table",
+        "table_caption": ["表 1"],
+        "table_body": "<table><tr><td>Alpha</td></tr></table>",
+        "translated_table_body": "<table><tr><td>阿尔法</td></tr></table>",
+        "translation_status": "success",
+        "table_footnote": ["注"],
+    }
+
+    assert render_items([item]) == (
+        "表 1\n\n"
+        "<table><tr><td>阿尔法</td></tr></table>\n\n"
+        "注\n"
+    )
+
+
+@pytest.mark.parametrize("status", ["failed", "pending", None])
+def test_render_items_falls_back_to_original_table_body(status):
+    item = {
+        "type": "table",
+        "table_body": "<table><tr><td>Alpha</td></tr></table>",
+        "translated_table_body": "<table><tr><td>阿尔法</td></tr></table>",
+    }
+    if status is not None:
+        item["translation_status"] = status
+
+    assert render_items([item]) == (
+        "<table><tr><td>Alpha</td></tr></table>\n"
+    )
+
+
+def test_render_items_falls_back_when_successful_table_translation_is_blank():
+    item = {
+        "type": "table",
+        "table_body": "<table><tr><td>Alpha</td></tr></table>",
+        "translated_table_body": "   ",
+        "translation_status": "success",
+    }
+
+    assert render_items([item]) == (
+        "<table><tr><td>Alpha</td></tr></table>\n"
+    )
