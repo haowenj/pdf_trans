@@ -5,6 +5,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from pdf_trans.client import (
+    DEFAULT_MINERU_BACKEND,
+    resolve_mineru_backend_config,
+)
+
 DEFAULT_MINERU_URL = "http://127.0.0.1:7100"
 
 
@@ -31,6 +36,8 @@ class WebSettings:
     database_url: str
     max_upload_mib: int
     mineru_url: str
+    mineru_backend: str
+    mineru_server_url: str | None
     host: str
     port: int
 
@@ -58,6 +65,13 @@ class WebSettings:
             "PDF_TRANS_DATABASE_URL",
             f"sqlite:///{(data_dir / 'pdf_trans.db').resolve()}",
         )
+        mineru_config = resolve_mineru_backend_config(
+            values.get(
+                "PDF_TRANS_MINERU_BACKEND",
+                DEFAULT_MINERU_BACKEND,
+            ),
+            values.get("PDF_TRANS_MINERU_SERVER_URL"),
+        )
         return cls(
             data_dir=data_dir,
             database_url=database_url,
@@ -67,6 +81,8 @@ class WebSettings:
             mineru_url=values.get(
                 "PDF_TRANS_MINERU_URL", DEFAULT_MINERU_URL
             ).rstrip("/"),
+            mineru_backend=mineru_config.backend,
+            mineru_server_url=mineru_config.server_url,
             host=values.get("PDF_TRANS_WEB_HOST", "127.0.0.1"),
             port=_positive_int(
                 values, "PDF_TRANS_WEB_PORT", 8000, maximum=65535

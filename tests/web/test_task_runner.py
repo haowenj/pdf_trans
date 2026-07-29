@@ -36,6 +36,8 @@ def settings(tmp_path) -> WebSettings:
         database_url=f"sqlite:///{tmp_path / 'db'}",
         max_upload_mib=200,
         mineru_url="http://mineru:7100",
+        mineru_backend="hybrid-http-client",
+        mineru_server_url="http://gpustack:8000",
         host="127.0.0.1",
         port=8000,
     )
@@ -47,8 +49,21 @@ def test_runner_starts_full_workflow_when_no_checkpoint_exists(tmp_path):
     source.write_bytes(b"%PDF-")
     received: dict[str, object] = {}
 
-    def full(path, *, svr_url, data_dir):
-        received.update(path=path, svr_url=svr_url, data_dir=data_dir)
+    def full(
+        path,
+        *,
+        svr_url,
+        mineru_backend,
+        mineru_server_url,
+        data_dir,
+    ):
+        received.update(
+            path=path,
+            svr_url=svr_url,
+            mineru_backend=mineru_backend,
+            mineru_server_url=mineru_server_url,
+            data_dir=data_dir,
+        )
         normalized = data_dir / "paper/normalized_content_list.json"
         markdown = data_dir / "paper/rendered.md"
         normalized.parent.mkdir(parents=True)
@@ -72,6 +87,8 @@ def test_runner_starts_full_workflow_when_no_checkpoint_exists(tmp_path):
     result = runner.run(task_view())
 
     assert received["data_dir"] == tmp_path / "tasks/a/attempts/1"
+    assert received["mineru_backend"] == "hybrid-http-client"
+    assert received["mineru_server_url"] == "http://gpustack:8000"
     assert result.normalized_path.endswith("normalized_content_list.json")
     assert result.markdown_path.endswith("rendered.md")
 
