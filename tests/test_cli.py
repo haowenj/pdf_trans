@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from pdf_trans import __main__ as cli
-from pdf_trans.client import DEFAULT_SVR_URL
+from pdf_trans.client import DEFAULT_MINERU_BACKEND, DEFAULT_SVR_URL
 from pdf_trans.cleaner import ContentStats
 from pdf_trans.errors import WorkflowError
 from pdf_trans.translation import TranslationStats
@@ -35,9 +35,18 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     )
     received = {}
 
-    def fake_process(path, *, svr_url, data_dir):
+    def fake_process(
+        path,
+        *,
+        svr_url,
+        mineru_backend,
+        mineru_server_url,
+        data_dir,
+    ):
         received["path"] = path
         received["svr_url"] = svr_url
+        received["mineru_backend"] = mineru_backend
+        received["mineru_server_url"] = mineru_server_url
         received["data_dir"] = data_dir
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
@@ -71,6 +80,8 @@ def test_main_prints_counts_and_output_path(tmp_path, monkeypatch, capsys):
     assert exit_code == 0
     assert received["path"] == pdf
     assert received["svr_url"] == DEFAULT_SVR_URL
+    assert received["mineru_backend"] == DEFAULT_MINERU_BACKEND
+    assert received["mineru_server_url"] is None
     assert received["data_dir"] == data_root / "runs" / f"cli-{TASK_ID}"
     manifest = json.loads(
         (received["data_dir"] / "task.json").read_text(encoding="utf-8")
@@ -114,8 +125,17 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     pdf.write_bytes(b"%PDF")
     received = {}
 
-    def fake_process(path, *, svr_url, data_dir):
+    def fake_process(
+        path,
+        *,
+        svr_url,
+        mineru_backend,
+        mineru_server_url,
+        data_dir,
+    ):
         received["svr_url"] = svr_url
+        received["mineru_backend"] = mineru_backend
+        received["mineru_server_url"] = mineru_server_url
         received["data_dir"] = data_dir
         return WorkflowResult(
             source_path=Path("paper_content_list.json"),
@@ -148,6 +168,8 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
 
     assert exit_code == 0
     assert received["svr_url"] == "http://mineru.example:7200"
+    assert received["mineru_backend"] == DEFAULT_MINERU_BACKEND
+    assert received["mineru_server_url"] is None
     assert received["data_dir"].parent == cli.DEFAULT_DATA_DIR / "runs"
     assert received["data_dir"].name == f"cli-{TASK_ID}"
     captured = capsys.readouterr()
@@ -163,8 +185,114 @@ def test_main_passes_custom_svr_url(tmp_path, monkeypatch, capsys):
     )
 
 
+def test_main_reads_remote_mineru_config_from_environment(
+    tmp_path, monkeypatch, capsys
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    received = {}
+
+    def stop_after_capture(
+        path,
+        *,
+        svr_url,
+        mineru_backend,
+        mineru_server_url,
+        data_dir,
+    ):
+        received.update(
+            backend=mineru_backend,
+            server_url=mineru_server_url,
+        )
+        raise WorkflowError("stop after capture")
+
+    monkeypatch.setenv(
+        "PDF_TRANS_MINERU_BACKEND",
+        "hybrid-http-client",
+    )
+    monkeypatch.setenv(
+        "PDF_TRANS_MINERU_SERVER_URL",
+        "http://gpustack:8000/",
+    )
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(cli, "process_pdf", stop_after_capture)
+
+    assert cli.main([str(pdf)]) == 1
+    assert received == {
+        "backend": "hybrid-http-client",
+        "server_url": "http://gpustack:8000",
+    }
+    capsys.readouterr()
+
+
+def test_main_explicit_mineru_options_override_environment(
+    tmp_path, monkeypatch, capsys
+):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    received = {}
+
+    def stop_after_capture(
+        path,
+        *,
+        svr_url,
+        mineru_backend,
+        mineru_server_url,
+        data_dir,
+    ):
+        received.update(
+            backend=mineru_backend,
+            server_url=mineru_server_url,
+        )
+        raise WorkflowError("stop after capture")
+
+    monkeypatch.setenv("PDF_TRANS_MINERU_BACKEND", "hybrid-engine")
+    monkeypatch.setattr(cli, "DEFAULT_DATA_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(cli, "process_pdf", stop_after_capture)
+
+    assert cli.main(
+        [
+            str(pdf),
+            "--mineru-backend",
+            "hybrid-http-client",
+            "--mineru-server-url",
+            "http://gpustack:9000/",
+        ]
+    ) == 1
+    assert received == {
+        "backend": "hybrid-http-client",
+        "server_url": "http://gpustack:9000",
+    }
+    capsys.readouterr()
+
+
+def test_main_rejects_remote_backend_without_url_before_starting_task(
+    monkeypatch,
+):
+    started = []
+    monkeypatch.delenv("PDF_TRANS_MINERU_SERVER_URL", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "start_cli_task",
+        lambda *args, **kwargs: started.append((args, kwargs)),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["paper.pdf", "--mineru-backend", "hybrid-http-client"])
+
+    assert exc_info.value.code == 2
+    assert started == []
+
+
 def test_main_reports_expected_error(tmp_path, monkeypatch, capsys):
-    def fail(path, *, svr_url, data_dir):
+    def fail(
+        path,
+        *,
+        svr_url,
+        mineru_backend,
+        mineru_server_url,
+        data_dir,
+    ):
         raise WorkflowError("PDF 文件不存在")
 
     monkeypatch.setattr(cli.uuid, "uuid4", lambda: UUID(TASK_ID))
@@ -193,7 +321,14 @@ def test_main_uses_unique_run_directory_for_each_full_workflow(
     data_root = tmp_path / "data"
     received_data_dirs = []
 
-    def stop_after_capture(path, *, svr_url, data_dir=None):
+    def stop_after_capture(
+        path,
+        *,
+        svr_url,
+        mineru_backend,
+        mineru_server_url,
+        data_dir=None,
+    ):
         received_data_dirs.append(data_dir)
         raise WorkflowError("stop after capture")
 

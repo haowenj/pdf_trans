@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
 from typing import Sequence
 
-from pdf_trans.client import DEFAULT_SVR_URL
-from pdf_trans.errors import PDFTransError
+from pdf_trans.client import (
+    DEFAULT_MINERU_BACKEND,
+    DEFAULT_SVR_URL,
+    resolve_mineru_backend_config,
+)
+from pdf_trans.errors import MinerUConfigError, PDFTransError
 from pdf_trans.logging_utils import configure_logging
 from pdf_trans.renderer import render_content_list_file
 from pdf_trans.task_diagnostics import (
@@ -78,6 +83,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SVR_URL,
         help=f"MinerU API 服务地址（默认：{DEFAULT_SVR_URL}）",
     )
+    parser.add_argument(
+        "--mineru-backend",
+        default=os.environ.get(
+            "PDF_TRANS_MINERU_BACKEND",
+            DEFAULT_MINERU_BACKEND,
+        ),
+        help="MinerU 解析后端：hybrid-engine 或 hybrid-http-client",
+    )
+    parser.add_argument(
+        "--mineru-server-url",
+        default=os.environ.get("PDF_TRANS_MINERU_SERVER_URL"),
+        help="hybrid-http-client 使用的 OpenAI 兼容模型服务地址",
+    )
     return parser
 
 
@@ -134,9 +152,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         configure_logging()
         return _cat_task_main(arguments[1:])
 
-    args = build_parser().parse_args(arguments)
+    parser = build_parser()
+    args = parser.parse_args(arguments)
     if (args.pdf_path is None) == (args.translate_only is None):
-        build_parser().error("必须且只能指定 PDF 路径或 --translate-only")
+        parser.error("必须且只能指定 PDF 路径或 --translate-only")
+
+    mineru_config = None
+    if args.pdf_path is not None:
+        try:
+            mineru_config = resolve_mineru_backend_config(
+                args.mineru_backend,
+                args.mineru_server_url,
+            )
+        except MinerUConfigError as exc:
+            parser.error(str(exc))
 
     task_type = "translate-only" if args.translate_only is not None else "full"
     input_path = (
@@ -175,6 +204,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = process_pdf(
             args.pdf_path,
             svr_url=args.svr_url,
+            mineru_backend=mineru_config.backend,
+            mineru_server_url=mineru_config.server_url,
             data_dir=task.root,
         )
     except (PDFTransError, OSError) as exc:
