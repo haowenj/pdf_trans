@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, delete, select, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from pdf_trans.web.models import Task, TaskLog, utc_now
 
 RECOVERABLE_STATES = {"failed", "interrupted"}
+DELETABLE_STATES = RECOVERABLE_STATES | {"succeeded"}
 
 
 class TaskNotFound(LookupError):
@@ -201,6 +203,28 @@ class TaskRepository:
             task.updated_at = now
             session.flush()
             return _task_view(task)
+
+    def delete_task(
+        self,
+        task_id: str,
+        *,
+        cleanup: Callable[[], None],
+    ) -> None:
+        with self._sessions.begin() as session:
+            task = session.scalar(
+                select(Task)
+                .where(Task.id == task_id)
+                .with_for_update()
+            )
+            if task is None:
+                raise TaskNotFound(task_id)
+            if task.status not in DELETABLE_STATES:
+                raise InvalidTaskState(task.status)
+
+            session.execute(delete(TaskLog).where(TaskLog.task_id == task_id))
+            session.delete(task)
+            session.flush()
+            cleanup()
 
     def append_log(self, task_id: str, level: str, message: str) -> LogView:
         with self._sessions.begin() as session:
