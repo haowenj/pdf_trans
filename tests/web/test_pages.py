@@ -34,3 +34,47 @@ def test_dashboard_assets_define_responsive_drawer_and_status_styles(
     assert "scrollHeight" in script
     assert "task.id.slice(0, 8)" in script
     assert "action.dataset.action === 'copy-id'" in script
+    assert "const deletableStatuses = new Set" in script
+    assert "actionButton('删除', 'delete')" in script
+    assert "window.confirm" in script
+    assert "method: 'DELETE'" in script
+    assert "button.textContent = '删除中…'" in script
+    assert "if (activeTaskId === taskId)" in script
+    assert "row.remove()" in script
+    assert "action.dataset.action === 'delete'" in script
+    assert "button.danger" in css
+    assert "button:disabled" in css
+
+
+def test_dashboard_shows_delete_only_for_terminal_tasks(
+    web_client,
+    repository,
+) -> None:
+    terminal_id = "12345678-1234-4abc-8def-1234567890ab"
+    queued_id = "87654321-4321-4abc-8def-1234567890ab"
+    repository.create_task(
+        terminal_id,
+        "finished.pdf",
+        f"tasks/{terminal_id}/upload/source.pdf",
+    )
+    repository.claim_next_task()
+    repository.mark_failed(terminal_id, "failed")
+    repository.create_task(
+        queued_id,
+        "queued.pdf",
+        f"tasks/{queued_id}/upload/source.pdf",
+    )
+
+    response = web_client.get("/")
+
+    terminal_row = response.text.split(
+        f'data-task-id="{terminal_id}"',
+        1,
+    )[1].split("</li>", 1)[0]
+    queued_row = response.text.split(
+        f'data-task-id="{queued_id}"',
+        1,
+    )[1].split("</li>", 1)[0]
+    assert 'data-action="delete"' in terminal_row
+    assert 'class="danger"' in terminal_row
+    assert 'data-action="delete"' not in queued_row

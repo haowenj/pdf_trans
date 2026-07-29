@@ -40,6 +40,22 @@ a:focus-visible {
   color: white;
 }
 
+button.danger {
+  border-color: #fecaca;
+  background: #fff7f7;
+  color: #b91c1c;
+}
+
+button.danger:hover:not(:disabled) {
+  border-color: #ef4444;
+  background: #fee2e2;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .topbar {
   min-height: 58px;
   padding: 0 24px;

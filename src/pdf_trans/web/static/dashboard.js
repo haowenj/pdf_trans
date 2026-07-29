@@ -7,6 +7,11 @@ const consoleOutput = document.querySelector('#console-output');
 const consoleTitle = document.querySelector('#console-title');
 const connection = document.querySelector('#console-connection');
 const autoscroll = document.querySelector('#console-autoscroll');
+const deletableStatuses = new Set([
+  'succeeded',
+  'failed',
+  'interrupted',
+]);
 let logSource = null;
 let activeTaskId = null;
 let activeFilename = '';
@@ -64,6 +69,11 @@ function renderTasks(tasks) {
       view.rel = 'noopener';
       view.textContent = '查看';
       actions.append(view);
+    }
+    if (deletableStatuses.has(task.status)) {
+      const deleteButton = actionButton('删除', 'delete');
+      deleteButton.classList.add('danger');
+      actions.append(deleteButton);
     }
     row.append(identity, status, actions);
     taskList.append(row);
@@ -147,6 +157,45 @@ async function resumeTask(taskId) {
   }
 }
 
+async function deleteTask(row, button) {
+  const taskId = row.dataset.taskId;
+  const filename = row.dataset.filename || '该文件';
+  const confirmed = window.confirm(
+    `确定删除“${filename}”吗？\n\n` +
+    '这会永久删除原始 PDF、日志和全部解析产物，无法恢复。'
+  );
+  if (!confirmed) return;
+
+  uploadError.textContent = '';
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = '删除中…';
+  try {
+    const response = await fetch(`/tasks/${taskId}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) {
+      let message = '无法删除任务';
+      try {
+        const payload = await response.json();
+        message = payload.detail || message;
+      } catch {
+        // Keep the generic message for a non-JSON server error.
+      }
+      throw new Error(message);
+    }
+    if (activeTaskId === taskId) {
+      closeConsole();
+    }
+    row.remove();
+  } catch (error) {
+    uploadError.textContent =
+      error instanceof Error ? error.message : '无法删除任务';
+    button.disabled = false;
+    button.textContent = originalLabel;
+  }
+}
+
 taskList.addEventListener('click', (event) => {
   const action = event.target.closest('[data-action]');
   const row = event.target.closest('[data-task-id]');
@@ -155,6 +204,8 @@ taskList.addEventListener('click', (event) => {
     openConsole(row.dataset.taskId, row.dataset.filename || '');
   } else if (action.dataset.action === 'resume') {
     resumeTask(row.dataset.taskId);
+  } else if (action.dataset.action === 'delete') {
+    deleteTask(row, action);
   } else if (action.dataset.action === 'copy-id') {
     navigator.clipboard.writeText(row.dataset.taskId);
     action.textContent = '已复制';

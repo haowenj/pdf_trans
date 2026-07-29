@@ -50,6 +50,10 @@
             <a class="button primary" href="/tasks/{{ task.id }}/view"
                target="_blank" rel="noopener">查看</a>
             {% endif %}
+            {% if task.status in ("succeeded", "failed", "interrupted") %}
+            <button class="danger" type="button"
+                    data-action="delete">删除</button>
+            {% endif %}
           </div>
         </li>
       {% endfor %}
