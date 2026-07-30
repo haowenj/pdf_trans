@@ -6,6 +6,12 @@ from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
 
+from pdf_trans.formula_protection import (
+    FormulaProtectionContext,
+    FormulaProtectionError,
+    ProtectedText,
+)
+
 
 _TARGET_TAGS = frozenset({"td", "th", "caption"})
 _HIDDEN_TAGS = frozenset({"script", "style", "template"})
@@ -40,6 +46,7 @@ class TableTextNode:
     text: str
     start: int
     end: int
+    protected_text: ProtectedText
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,7 @@ class PreparedTableTranslation:
     original_html: str
     nodes: tuple[TableTextNode, ...]
     structure: tuple[tuple[object, ...], ...]
+    formula_context: FormulaProtectionContext
 
     def build_request(self) -> str:
         if not self.nodes:
@@ -59,7 +67,10 @@ class PreparedTableTranslation:
                     '{"translations":[{"id":"...","text":"..."}]}.'
                 ),
                 "items": [
-                    {"id": node.node_id, "text": node.text}
+                    {
+                        "id": node.node_id,
+                        "text": node.protected_text.model_text,
+                    }
                     for node in self.nodes
                 ],
             },
@@ -111,9 +122,18 @@ class PreparedTableTranslation:
         )
         translated = self.original_html
         for node in reversed(self.nodes):
+            try:
+                restored_text = self.formula_context.restore(
+                    translations[node.node_id],
+                    node.protected_text,
+                )
+            except FormulaProtectionError as exc:
+                raise TableTranslationError(
+                    f"表格节点 {node.node_id} 公式校验失败：{exc}"
+                ) from exc
             translated = (
                 translated[: node.start]
-                + escape(translations[node.node_id], quote=False)
+                + escape(restored_text, quote=False)
                 + translated[node.end :]
             )
         translated_structure = _parse_html(translated, collect_nodes=False)
@@ -200,6 +220,7 @@ class _TableHTMLParser(HTMLParser):
                 text=stripped,
                 start=content_start,
                 end=content_end,
+                protected_text=ProtectedText(stripped, ()),
             )
         )
 
@@ -258,8 +279,20 @@ def _parse_response(
 
 def prepare_table_translation(table_html: str) -> PreparedTableTranslation:
     parsed = _parse_html(table_html, collect_nodes=True)
+    formula_context = FormulaProtectionContext()
+    nodes = tuple(
+        TableTextNode(
+            node_id=node.node_id,
+            text=node.text,
+            start=node.start,
+            end=node.end,
+            protected_text=formula_context.protect(node.text),
+        )
+        for node in parsed.nodes
+    )
     return PreparedTableTranslation(
         original_html=table_html,
-        nodes=parsed.nodes,
+        nodes=nodes,
         structure=parsed.structure,
+        formula_context=formula_context,
     )

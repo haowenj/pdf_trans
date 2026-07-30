@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -200,3 +201,74 @@ def test_table_with_no_eligible_text_builds_no_model_payload():
 
     with pytest.raises(TableTranslationError, match="没有待翻译节点"):
         prepared.build_response_format()
+
+
+def test_table_request_hides_formulas_and_restores_them_in_original_cells():
+    formula_one = r"${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
+    formula_two = r"$x^{2}+\frac{a}{b}$"
+    source = (
+        '<table class="source"><tr>'
+        f'<td rowspan="2">Temperature {formula_one}</td>'
+        f'<td colspan="3">First {formula_two} then $y_{{1}}$</td>'
+        "</tr></table>"
+    )
+    prepared = prepare_table_translation(source)
+    payload = json.loads(prepared.build_request())
+
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert formula_one not in serialized
+    assert formula_two not in serialized
+    assert r"\circ" not in serialized
+    assert len(
+        {
+            value
+            for value in re.findall(
+                r"⟪PDFTRANS_FORMULA:[^⟫]+⟫", serialized
+            )
+        }
+    ) == 3
+
+    translated_items = []
+    for item in payload["items"]:
+        translated_items.append(
+            (
+                item["id"],
+                item["text"]
+                .replace("Temperature", "温度")
+                .replace("First", "先")
+                .replace("then", "后"),
+            )
+        )
+    translated = prepared.apply_response(response(*reversed(translated_items)))
+
+    assert formula_one in translated
+    assert formula_two in translated
+    assert "$y_{1}$" in translated
+    assert 'class="source"' in translated
+    assert 'rowspan="2"' in translated
+    assert 'colspan="3"' in translated
+
+
+def test_table_rejects_formula_moved_between_cells():
+    prepared = prepare_table_translation(
+        "<table><tr><td>Alpha $x$</td><td>Beta $y$</td></tr></table>"
+    )
+    payload = json.loads(prepared.build_request())
+    first = payload["items"][0]["text"]
+    second = payload["items"][1]["text"]
+    first_token = re.search(r"⟪PDFTRANS_FORMULA:[^⟫]+⟫", first).group(0)
+    second_token = re.search(r"⟪PDFTRANS_FORMULA:[^⟫]+⟫", second).group(0)
+
+    with pytest.raises(TableTranslationError, match="缺失|新增"):
+        prepared.apply_response(
+            response(
+                (
+                    payload["items"][0]["id"],
+                    first.replace(first_token, second_token),
+                ),
+                (
+                    payload["items"][1]["id"],
+                    second.replace(second_token, first_token),
+                ),
+            )
+        )
