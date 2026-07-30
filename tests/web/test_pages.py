@@ -14,6 +14,7 @@ def test_dashboard_renders_confirmed_layout(
     assert 'id="upload-dropzone"' in response.text
     assert 'id="task-list"' in response.text
     assert 'id="console-drawer"' in response.text
+    assert 'id="console-download"' in response.text
     assert "paper.pdf" in response.text
     assert "/static/dashboard.js" in response.text
     assert "任务 UUID：12345678" in response.text
@@ -44,6 +45,18 @@ def test_dashboard_assets_define_responsive_drawer_and_status_styles(
     assert "action.dataset.action === 'delete'" in script
     assert "button.danger" in css
     assert "button:disabled" in css
+    assert "const MAX_CONSOLE_LOGS = 200;" in script
+    assert "/logs/recent" in script
+    assert "requestAnimationFrame(flushLogs)" in script
+    assert "document.createDocumentFragment()" in script
+    assert "pendingLogs.splice(" in script
+    assert "consoleOutput.firstChild.remove()" in script
+    assert "new AbortController()" in script
+    assert "historyController.abort()" in script
+    assert "cancelAnimationFrame(renderFrame)" in script
+    assert "consoleOutput.replaceChildren()" in script
+    assert "log.id <= lastLogId" in script
+    assert "/logs/download" in script
 
 
 def test_dashboard_shows_delete_only_for_terminal_tasks(

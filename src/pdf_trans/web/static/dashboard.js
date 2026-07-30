@@ -7,14 +7,20 @@ const consoleOutput = document.querySelector('#console-output');
 const consoleTitle = document.querySelector('#console-title');
 const connection = document.querySelector('#console-connection');
 const autoscroll = document.querySelector('#console-autoscroll');
+const consoleDownload = document.querySelector('#console-download');
+const MAX_CONSOLE_LOGS = 200;
 const deletableStatuses = new Set([
   'succeeded',
   'failed',
   'interrupted',
 ]);
 let logSource = null;
+let historyController = null;
+let renderFrame = null;
+let consoleGeneration = 0;
 let activeTaskId = null;
 let activeFilename = '';
+let pendingLogs = [];
 let logMessages = [];
 let lastLogId = 0;
 
@@ -82,69 +88,134 @@ function renderTasks(tasks) {
     `${running} 个运行中 · ${queued} 个等待中`;
 }
 
-function appendLog(log) {
-  lastLogId = Math.max(lastLogId, log.id);
-  logMessages.push(`[${log.level}] ${log.message}`);
-  const line = document.createElement('span');
-  line.className = `log-${log.level.toLowerCase()}`;
-  line.textContent = `[${log.level}] ${log.message}\n`;
-  consoleOutput.append(line);
+function flushLogs() {
+  renderFrame = null;
+  if (pendingLogs.length === 0) return;
+
+  const logs = pendingLogs;
+  pendingLogs = [];
+  const overflow = Math.max(
+    0,
+    logMessages.length + logs.length - MAX_CONSOLE_LOGS
+  );
+  if (overflow > 0) {
+    logMessages.splice(0, overflow);
+    for (let index = 0; index < overflow; index += 1) {
+      if (consoleOutput.firstChild) consoleOutput.firstChild.remove();
+    }
+  }
+
+  const fragment = document.createDocumentFragment();
+  for (const log of logs) {
+    const message = `[${log.level}] ${log.message}`;
+    logMessages.push(message);
+    const line = document.createElement('span');
+    line.className = `log-${log.level.toLowerCase()}`;
+    line.textContent = `${message}\n`;
+    fragment.append(line);
+  }
+  consoleOutput.append(fragment);
   if (autoscroll.checked) {
     consoleOutput.scrollTop = consoleOutput.scrollHeight;
   }
 }
 
-async function loadHistory(taskId) {
-  let cursor = 0;
-  while (true) {
-    const response = await fetch(`/tasks/${taskId}/logs?after_id=${cursor}`);
-    if (!response.ok) throw new Error('无法读取历史日志');
-    const logs = await response.json();
-    logs.forEach(appendLog);
-    if (logs.length < 500) return;
-    cursor = logs[logs.length - 1].id;
+function enqueueLog(log) {
+  if (log.id <= lastLogId) return;
+  lastLogId = log.id;
+  pendingLogs.push(log);
+  if (pendingLogs.length > MAX_CONSOLE_LOGS) {
+    pendingLogs.splice(
+      0,
+      pendingLogs.length - MAX_CONSOLE_LOGS
+    );
+  }
+  if (renderFrame === null) {
+    renderFrame = requestAnimationFrame(flushLogs);
   }
 }
 
-function connectLogs(taskId) {
-  logSource = new EventSource(
+async function loadHistory(taskId, signal) {
+  const response = await fetch(`/tasks/${taskId}/logs/recent`, { signal });
+  if (!response.ok) throw new Error('无法读取历史日志');
+  return response.json();
+}
+
+function connectLogs(taskId, generation) {
+  const source = new EventSource(
     `/tasks/${taskId}/logs/events?after_id=${lastLogId}`
   );
-  logSource.addEventListener('open', () => {
-    connection.textContent = '● 实时连接';
+  logSource = source;
+  source.addEventListener('open', () => {
+    if (generation === consoleGeneration) {
+      connection.textContent = '● 实时连接';
+    }
   });
-  logSource.addEventListener('log', (event) => {
-    appendLog(JSON.parse(event.data));
+  source.addEventListener('log', (event) => {
+    if (generation === consoleGeneration) {
+      enqueueLog(JSON.parse(event.data));
+    }
   });
-  logSource.addEventListener('error', () => {
-    connection.textContent = '正在重连';
+  source.addEventListener('error', () => {
+    if (generation === consoleGeneration) {
+      connection.textContent = '正在重连';
+    }
   });
 }
 
-async function openConsole(taskId, filename) {
+function resetConsoleResources() {
+  consoleGeneration += 1;
+  if (historyController) historyController.abort();
+  historyController = null;
   if (logSource) logSource.close();
-  activeTaskId = taskId;
-  activeFilename = filename;
+  logSource = null;
+  if (renderFrame !== null) cancelAnimationFrame(renderFrame);
+  renderFrame = null;
+  pendingLogs = [];
   logMessages = [];
   lastLogId = 0;
   consoleOutput.replaceChildren();
+}
+
+async function openConsole(taskId, filename) {
+  resetConsoleResources();
+  const generation = consoleGeneration;
+  const controller = new AbortController();
+  historyController = controller;
+  activeTaskId = taskId;
+  activeFilename = filename;
   consoleTitle.textContent = filename;
+  consoleDownload.href =
+    `/tasks/${encodeURIComponent(taskId)}/logs/download`;
   drawer.classList.add('open');
   drawer.setAttribute('aria-hidden', 'false');
   connection.textContent = '正在加载';
   try {
-    await loadHistory(taskId);
-    connectLogs(taskId);
+    const logs = await loadHistory(taskId, controller.signal);
+    if (generation !== consoleGeneration) return;
+    logs.forEach(enqueueLog);
+    connectLogs(taskId, generation);
   } catch (error) {
-    connection.textContent = error.message;
+    if (
+      generation === consoleGeneration &&
+      error.name !== 'AbortError'
+    ) {
+      connection.textContent = error.message;
+    }
+  } finally {
+    if (generation === consoleGeneration) {
+      historyController = null;
+    }
   }
 }
 
 function closeConsole() {
-  if (logSource) logSource.close();
-  logSource = null;
+  resetConsoleResources();
   activeTaskId = null;
   activeFilename = '';
+  consoleTitle.textContent = '';
+  consoleDownload.removeAttribute('href');
+  connection.textContent = '未连接';
   drawer.classList.remove('open');
   drawer.setAttribute('aria-hidden', 'true');
 }
