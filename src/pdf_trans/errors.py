@@ -36,3 +36,7 @@ class TranslationConfigError(PDFTransError):
 
 class TranslationClientError(PDFTransError):
     """Raised when one translation model call fails."""
+
+
+class FormulaAuditError(PDFTransError):
+    """Raised when a trustworthy formula audit cannot be produced."""
