@@ -470,7 +470,7 @@ git commit -m "feat: constrain table translation output"
 Run:
 
 ```bash
-git diff HEAD~3 -- pyproject.toml
+git diff e33fc16..HEAD -- pyproject.toml
 ```
 
 Expected: no output.
@@ -491,8 +491,8 @@ Run:
 
 ```bash
 git status --short
-git diff --check HEAD~3..HEAD
-git diff --stat HEAD~3..HEAD
+git diff --check e33fc16..HEAD
+git diff --stat e33fc16..HEAD
 ```
 
 Expected:
