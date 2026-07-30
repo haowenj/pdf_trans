@@ -1,12 +1,18 @@
 import json
 import logging
 from io import BytesIO
+from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pytest
 
 from pdf_trans.cleaner import ContentStats
-from pdf_trans.errors import ArchiveError, NormalizationError, WorkflowError
+from pdf_trans.errors import (
+    ArchiveError,
+    FormulaAuditError,
+    NormalizationError,
+    WorkflowError,
+)
 from pdf_trans.translation import TranslationStats
 from pdf_trans.workflow import process_pdf, process_translation_file
 
@@ -136,6 +142,130 @@ def test_process_pdf_preserves_raw_archive_when_extraction_fails(tmp_path):
         process_pdf(pdf, data_dir=output_root, client=client)
 
     assert (output_root / "mineru_result.zip").read_bytes() == archive_bytes
+
+
+def test_process_pdf_audits_original_before_cleaning_and_translation(
+    tmp_path,
+    monkeypatch,
+):
+    from pdf_trans import workflow
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = FakeMinerUClient(
+        make_result_zip(
+            [
+                {
+                    "type": "text",
+                    "text": "Value $C_7 \\neqq C_6$",
+                    "page_idx": 4,
+                }
+            ]
+        )
+    )
+    events = []
+    real_clean = workflow.clean_content_list_file_with_items
+
+    def fake_audit(source, output):
+        events.append(("audit", source, output))
+        output.write_text("{}", encoding="utf-8")
+        return SimpleNamespace(
+            stats=SimpleNamespace(
+                total_formulas=1,
+                invalid_syntax_count=1,
+                suspicious_count=1,
+            )
+        )
+
+    def tracking_clean(source, output):
+        events.append(("clean", source, output))
+        return real_clean(source, output)
+
+    class TrackingTranslator(FakeTranslator):
+        def translate(self, text):
+            events.append(("translate", text))
+            return super().translate(text)
+
+    monkeypatch.setattr(
+        workflow,
+        "audit_content_list_file",
+        fake_audit,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "clean_content_list_file_with_items",
+        tracking_clean,
+    )
+
+    process_pdf(
+        pdf,
+        data_dir=tmp_path / "data",
+        client=client,
+        translator=TrackingTranslator(),
+    )
+
+    event_names = [value[0] for value in events]
+    assert event_names.index("audit") < event_names.index("clean")
+    assert event_names.index("audit") < event_names.index("translate")
+    audit_path = (
+        tmp_path / "data/paper/hybrid_auto/formula_audit.json"
+    )
+    assert events[0][2] == audit_path
+    assert audit_path.exists()
+
+
+def test_process_pdf_stops_before_cleaning_when_formula_audit_fails(
+    tmp_path,
+    monkeypatch,
+):
+    from pdf_trans import workflow
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = FakeMinerUClient(
+        make_result_zip([{"type": "text", "text": "正文"}])
+    )
+    calls = []
+
+    def fail_audit(source, output):
+        raise FormulaAuditError("node unavailable")
+
+    def fail_clean(source, output):
+        calls.append("clean")
+        raise AssertionError("cleaning must not run")
+
+    class FailingTranslator(FakeTranslator):
+        def translate(self, text):
+            calls.append("translate")
+            raise AssertionError("translation must not run")
+
+    monkeypatch.setattr(
+        workflow,
+        "audit_content_list_file",
+        fail_audit,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        workflow,
+        "clean_content_list_file_with_items",
+        fail_clean,
+    )
+
+    with pytest.raises(FormulaAuditError, match="node unavailable"):
+        process_pdf(
+            pdf,
+            data_dir=tmp_path / "data",
+            client=client,
+            translator=FailingTranslator(),
+        )
+
+    assert calls == []
+    output = tmp_path / "data/paper/hybrid_auto"
+    assert not (output / "cleaned_content_list.json").exists()
+    assert not (output / "normalized_content_list.json").exists()
+    assert not (output / "translated_content_list.json").exists()
+    assert not (output / "rendered.md").exists()
 
 
 def test_process_pdf_writes_cross_page_report_without_changing_other_outputs(
@@ -469,6 +599,7 @@ def test_process_pdf_logs_stage_actions_counts_and_cross_page_merge(
         "校验 PDF",
         "调用 MinerU",
         "解压解析结果",
+        "公式审计",
         "清洗数据",
         "检测跨页段落",
         "合并跨页段落",

@@ -21,6 +21,7 @@ from pdf_trans.cross_page import (
     write_cross_page_candidates_file,
 )
 from pdf_trans.errors import WorkflowError
+from pdf_trans.formula_audit import audit_content_list_file
 from pdf_trans.logging_utils import logged_stage
 from pdf_trans.normalizer import (
     normalize_cross_page_items,
@@ -277,6 +278,23 @@ def _process_pdf_stages(
         source_path = find_content_list(extracted_paths)
         stage.set_result(
             f"解压 {len(extracted_paths)} 个文件，content list 为 {source_path}"
+        )
+
+    formula_audit_path = source_path.parent / "formula_audit.json"
+    with logged_stage(
+        LOGGER,
+        "公式审计",
+        "扫描 MinerU 原始公式并使用 KaTeX 批量校验",
+    ) as stage:
+        audit_report = audit_content_list_file(
+            source_path,
+            formula_audit_path,
+        )
+        stage.set_result(
+            f"总公式 {audit_report.stats.total_formulas}，"
+            f"语法失败 {audit_report.stats.invalid_syntax_count}，"
+            f"可疑 {audit_report.stats.suspicious_count}，"
+            f"报告 {formula_audit_path.resolve()}"
         )
 
     output_path = source_path.parent / "cleaned_content_list.json"
