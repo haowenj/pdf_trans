@@ -83,14 +83,21 @@ def test_rejects_formula_marker_order_change():
         restore_cell_segment("甲 ⟦M1⟧ 乙 ⟦M0⟧", protected)
 
 
-def test_rejects_any_unprotected_dollar_added_by_model():
+@pytest.mark.parametrize(
+    "translated",
+    [
+        "甲 ⟦M0⟧ $",
+        r"甲 ⟦M0⟧ \$",
+    ],
+)
+def test_rejects_any_unprotected_dollar_added_by_model(translated):
     protected = protect_cell_text(r"Alpha $x$")
 
     with pytest.raises(
         CellProtectionError,
         match="新增了未保护公式符号",
     ):
-        restore_cell_segment("甲 ⟦M0⟧ $", protected)
+        restore_cell_segment(translated, protected)
 
 
 def test_preserves_backslashes_braces_commands_and_ampersands_exactly():

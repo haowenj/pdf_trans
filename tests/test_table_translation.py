@@ -267,7 +267,7 @@ def test_reserved_source_marker_falls_back_only_colliding_cell():
 def test_rebuild_preserves_inline_cdata_exactly():
     source = (
         "<table><tr><td>Alpha "
-        "<![CDATA[value > other]]> Beta</td></tr></table>"
+        "<![CDATA[value ]> other]]> Beta</td></tr></table>"
     )
     prepared = prepare_table_translation(source)
 
@@ -281,7 +281,7 @@ def test_rebuild_preserves_inline_cdata_exactly():
 
     assert result.translated_html == (
         "<table><tr><td>甲 "
-        "<![CDATA[value > other]]> 乙</td></tr></table>"
+        "<![CDATA[value ]> other]]> 乙</td></tr></table>"
     )
 
 

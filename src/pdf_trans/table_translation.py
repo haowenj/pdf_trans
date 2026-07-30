@@ -389,10 +389,12 @@ class _TableHTMLParser(HTMLParser):
 
     def _raw_unknown_declaration(self) -> str:
         start = self._absolute_position()
-        end = self._source.find("]>", start)
+        cdata_prefix = self._source[start : start + 9].lower()
+        terminator = "]]>" if cdata_prefix == "<![cdata[" else "]>"
+        end = self._source.find(terminator, start)
         if end < 0:
             raise TableTranslationError("HTML 未知声明缺少结束符")
-        return self._source[start : end + 2]
+        return self._source[start : end + len(terminator)]
 
     def _protect_raw(self, raw: str) -> None:
         if self._current is None:
