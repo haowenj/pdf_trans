@@ -1011,3 +1011,71 @@ def test_resume_preserves_partial_table_metadata(tmp_path):
     assert item["table_translation_partial"] is True
     assert item["table_translation_fallback_cell_count"] == 1
     assert item["table_translation_fallbacks"][0]["cell_id"] == "cell-0001"
+
+
+def test_long_table_keeps_density_translation_when_later_formula_cell_fails(
+    tmp_path,
+):
+    density_formula = (
+        r"${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
+    )
+    rows = [
+        f"<tr><td>Density at {density_formula}</td>"
+        "<td>775 to 840</td></tr>"
+    ]
+    rows.extend(
+        f"<tr><td>Property {number}</td><td>{number}</td></tr>"
+        for number in range(1, 40)
+    )
+    corrosion_source = (
+        "CORROSION Copper strip, "
+        r"$2\mathrm{\;h}$ at ${100}^{ \circ }\mathrm{C}$ "
+        r"THERMAL STABILITY ${}^{\mathrm{v}}$"
+    )
+    rows.append(
+        f"<tr><td>{corrosion_source}</td><td>42</td></tr>"
+    )
+    table_body = "<table>" + "".join(rows) + "</table>"
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+
+    def respond(payload, call_number):
+        translated = []
+        for cell in payload["cells"]:
+            text = cell["text"]
+            if "CORROSION" in text:
+                value = "腐蚀 ⟦M0⟧"
+            elif "Density" in text:
+                value = "密度在 ⟦M0⟧ 时"
+            else:
+                value = text.replace("Property", "性质")
+            translated.append((cell["cell_id"], value))
+        return cell_response(*translated)
+
+    translator = CellBatchTranslator(respond)
+    translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=1,
+        concurrency=1,
+    )
+    item = read_items(output)[0]
+
+    assert item["translation_status"] == "success"
+    assert item["table_translation_partial"] is True
+    assert (
+        f"密度在 {density_formula} 时"
+        in item["translated_table_body"]
+    )
+    assert corrosion_source in item["translated_table_body"]
+    assert item["table_translation_fallback_cell_count"] == 1
+    assert len(translator.requests) >= 2
+    assert all(
+        len(request["cells"]) <= 12
+        for request in translator.requests
+    )
