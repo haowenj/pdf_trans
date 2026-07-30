@@ -87,6 +87,13 @@ def _extract_formulas(text: str) -> tuple[str, ...]:
     return tuple(text[start:end] for start, end in _formula_spans(text))
 
 
+def _contains_unescaped_dollar(text: str) -> bool:
+    return any(
+        character == "$" and not _is_escaped(text, position)
+        for position, character in enumerate(text)
+    )
+
+
 def _family_name(family: str) -> str:
     return "公式" if family == "M" else "结构"
 
@@ -202,8 +209,8 @@ def restore_cell_segment(
     if not isinstance(translated_text, str) or not translated_text.strip():
         raise CellProtectionError("单元格译文不能为空")
     _reject_malformed_markers(translated_text)
-    if _extract_formulas(translated_text):
-        raise CellProtectionError("模型译文新增了未保护公式")
+    if _contains_unescaped_dollar(translated_text):
+        raise CellProtectionError("模型译文新增了未保护公式符号")
     _validate_marker_family(
         translated_text,
         "M",

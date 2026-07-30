@@ -674,6 +674,34 @@ def test_numeric_only_table_makes_no_model_call_and_finishes_successfully(tmp_pa
     assert stats.model_call_count == 0
 
 
+def test_reserved_marker_source_cell_falls_back_without_model_call(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = (
+        "<table><tr><td>Literal ⟦M0⟧ marker</td></tr></table>"
+    )
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+    translator = FakeTranslator([])
+
+    translate_content_list_file(
+        source,
+        output,
+        translator,
+        concurrency=1,
+    )
+    result = read_items(output)[0]
+
+    assert translator.received == []
+    assert result["translation_status"] == "success"
+    assert result["translated_table_body"] == table_body
+    assert result["table_translation_partial"] is True
+    assert result["table_translation_fallback_cell_count"] == 1
+    assert result["table_translation_fallbacks"][0]["cell_id"] == "cell-0001"
+
+
 class SelectiveTranslator:
     def __init__(self):
         self.received = []

@@ -50,6 +50,13 @@ _VOID_TAGS = frozenset(
     }
 )
 _ENGLISH_RE = re.compile(r"[A-Za-z]")
+_NUMBER_PATTERN = r"[+-]?(?:\d+(?:[.,]\d+)?)"
+_NUMBER_UNIT_PATTERN = r"(?:\s*(?:%|‰|°\s*[CF]?))?"
+_PURE_NUMERIC_RANGE_RE = re.compile(
+    rf"^\s*{_NUMBER_PATTERN}{_NUMBER_UNIT_PATTERN}\s+"
+    rf"(?:to|through)\s+{_NUMBER_PATTERN}{_NUMBER_UNIT_PATTERN}\s*$",
+    re.IGNORECASE,
+)
 _PURE_STANDARD_CODE_RE = re.compile(
     r"^(?:(?:ASTM\s+)?D\d+[A-Z]?|IP\s*\d+|UOP\s*\d+|"
     r"[A-Z]{1,4}-?\d+[A-Z0-9-]*)(?:\s*[/,;]\s*"
@@ -192,7 +199,7 @@ class CellTranslationBatch:
             if not isinstance(translated, str) or not translated.strip():
                 errors[work_id] = "模型返回空译文"
                 continue
-            translations[work_id] = translated.strip()
+            translations[work_id] = translated
 
         for work_id in expected_order:
             if work_id not in seen:
@@ -220,6 +227,7 @@ class PreparedCell:
     segments: tuple[ProtectedCellSegment, ...]
     work_ids: tuple[str, ...]
     skipped: bool
+    preparation_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -275,6 +283,11 @@ class PreparedTableTranslation:
         success_count = 0
         fallbacks: list[CellFallback] = []
         for cell in self.cells:
+            if cell.preparation_error is not None:
+                fallbacks.append(
+                    CellFallback(cell.cell_id, cell.preparation_error)
+                )
+                continue
             if cell.skipped:
                 continue
             failed_ids = [
@@ -373,6 +386,13 @@ class _TableHTMLParser(HTMLParser):
         if end < 0:
             raise TableTranslationError("HTML 标签缺少结束符")
         return self._source[start : end + 1]
+
+    def _raw_unknown_declaration(self) -> str:
+        start = self._absolute_position()
+        end = self._source.find("]>", start)
+        if end < 0:
+            raise TableTranslationError("HTML 未知声明缺少结束符")
+        return self._source[start : end + 2]
 
     def _protect_raw(self, raw: str) -> None:
         if self._current is None:
@@ -482,6 +502,9 @@ class _TableHTMLParser(HTMLParser):
     def handle_pi(self, data: str) -> None:
         self._protect_raw(self._raw_until_gt())
 
+    def unknown_decl(self, data: str) -> None:
+        self._protect_raw(self._raw_unknown_declaration())
+
     @property
     def result(self) -> _ParsedHTML:
         if self._current is not None or self._stack:
@@ -507,7 +530,11 @@ def _parse_html(source: str) -> _ParsedHTML:
 
 def _needs_translation(model_text: str) -> bool:
     plain = re.sub(r"⟦[MH]\d+⟧", "", model_text).strip()
-    if not plain or _ENGLISH_RE.search(plain) is None:
+    if (
+        not plain
+        or _PURE_NUMERIC_RANGE_RE.fullmatch(plain)
+        or _ENGLISH_RE.search(plain) is None
+    ):
         return False
     if _PURE_STANDARD_CODE_RE.fullmatch(plain):
         return False
@@ -521,9 +548,17 @@ def _build_cell(raw: _RawCell) -> PreparedCell:
             html_markers=raw.html_markers,
         )
     except CellProtectionError as exc:
-        raise TableTranslationError(
-            f"单元格 {raw.cell_id} 保护失败：{exc}"
-        ) from exc
+        return PreparedCell(
+            cell_id=raw.cell_id,
+            tag=raw.tag,
+            content_start=raw.content_start,
+            content_end=raw.content_end,
+            original_inner_html=raw.original_inner_html,
+            segments=(),
+            work_ids=(),
+            skipped=False,
+            preparation_error=f"单元格保护失败：{exc}",
+        )
     if not _needs_translation(protected.model_text):
         return PreparedCell(
             cell_id=raw.cell_id,

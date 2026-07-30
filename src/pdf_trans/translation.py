@@ -456,23 +456,6 @@ def _translate_table_one(
             started=started,
         )
 
-    if not prepared.work_items:
-        elapsed = time.perf_counter() - started
-        LOGGER.info(
-            "第 %d 张表无需翻译：success，耗时 %.2f 秒",
-            table_number,
-            elapsed,
-        )
-        return TableTranslationOutcome(
-            index=index,
-            table_number=table_number,
-            status="success",
-            translated_table_body=prepared.original_html,
-            error=None,
-            model_call_count=0,
-            elapsed_seconds=elapsed,
-        )
-
     pending = {
         item.work_id: item for item in prepared.work_items
     }

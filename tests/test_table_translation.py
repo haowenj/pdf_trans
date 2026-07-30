@@ -151,10 +151,24 @@ def test_skips_empty_numeric_formula_hidden_and_standard_code_cells():
         "</tr></table>"
     )
 
-    assert [work.work_id for work in prepared.work_items] == [
-        "cell-0002",
-        "cell-0005",
-    ]
+    assert [work.work_id for work in prepared.work_items] == ["cell-0005"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "775 to 840",
+        "10.5 through 12.5",
+        "-20 to +40 °C",
+        "15 to 20%",
+    ],
+)
+def test_skips_pure_numeric_ranges_with_ascii_connectors(value):
+    prepared = prepare_table_translation(
+        f"<table><tr><td>{value}</td></tr></table>"
+    )
+
+    assert prepared.work_items == ()
 
 
 def test_standard_codes_are_skipped_only_when_the_whole_cell_matches():
@@ -226,6 +240,49 @@ def test_rebuild_rejects_marker_tampering_for_only_that_cell():
     )
     assert result.fallback_cell_count == 1
     assert re.search("新增|缺失", result.fallbacks[0].error)
+
+
+def test_reserved_source_marker_falls_back_only_colliding_cell():
+    source = (
+        "<table><tr><td>Alpha</td>"
+        "<td>Literal ⟦M0⟧ marker</td></tr></table>"
+    )
+    prepared = prepare_table_translation(source)
+
+    assert [work.work_id for work in prepared.work_items] == [
+        "cell-0001"
+    ]
+    result = prepared.rebuild({"cell-0001": "甲"}, {})
+
+    assert result.translated_html == (
+        "<table><tr><td>甲</td>"
+        "<td>Literal ⟦M0⟧ marker</td></tr></table>"
+    )
+    assert result.success_cell_count == 1
+    assert result.fallback_cell_count == 1
+    assert result.fallbacks[0].cell_id == "cell-0002"
+    assert "保留的公式占位符" in result.fallbacks[0].error
+
+
+def test_rebuild_preserves_inline_cdata_exactly():
+    source = (
+        "<table><tr><td>Alpha "
+        "<![CDATA[value > other]]> Beta</td></tr></table>"
+    )
+    prepared = prepare_table_translation(source)
+
+    assert prepared.work_items[0].model_text == (
+        "Alpha ⟦H0⟧ Beta"
+    )
+    result = prepared.rebuild(
+        {"cell-0001": "甲 ⟦H0⟧ 乙"},
+        {},
+    )
+
+    assert result.translated_html == (
+        "<table><tr><td>甲 "
+        "<![CDATA[value > other]]> 乙</td></tr></table>"
+    )
 
 
 def work_item(
@@ -363,6 +420,33 @@ def test_invalid_item_fields_only_fail_that_expected_cell():
 
     assert parsed.translations == {"cell-0002": "乙"}
     assert parsed.errors == {"cell-0001": "模型翻译项字段不一致"}
+
+
+def test_batch_response_preserves_model_boundary_whitespace():
+    batch = plan_cell_batches(
+        (work_item(1),),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )[0]
+
+    parsed = batch.parse_response(
+        json.dumps(
+            {
+                "cells": [
+                    {
+                        "cell_id": "cell-0001",
+                        "translated_text": " 前缀与后缀 ",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert parsed.translations == {
+        "cell-0001": " 前缀与后缀 "
+    }
 
 
 @pytest.mark.parametrize(
