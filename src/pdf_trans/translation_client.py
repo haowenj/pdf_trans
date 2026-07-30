@@ -148,18 +148,27 @@ class OpenAICompatibleTranslator:
         if self._owns_client:
             self._http.close()
 
-    def translate(self, text: str) -> str:
+    def translate(
+        self,
+        text: str,
+        *,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": TRANSLATION_SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+        }
+        if response_format is not None:
+            payload["response_format"] = response_format
+
         try:
             response = self._http.post(
                 f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
-                json={
-                    "model": self.model,
-                    "messages": [
-                        {"role": "system", "content": TRANSLATION_SYSTEM_PROMPT},
-                        {"role": "user", "content": text},
-                    ],
-                },
+                json=payload,
             )
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]

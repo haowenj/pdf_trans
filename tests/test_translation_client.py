@@ -204,6 +204,45 @@ def test_translate_sends_compatible_request_and_returns_only_content():
         assert required in TRANSLATION_SYSTEM_PROMPT
 
 
+def test_translate_includes_explicit_response_format():
+    seen = {}
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "table_translation",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    def handler(request):
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"translations":[]}'}}]},
+        )
+
+    translator = OpenAICompatibleTranslator(
+        base_url="http://translate.example/v1",
+        api_key="secret",
+        model="paper-model",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    result = translator.translate(
+        "table request",
+        response_format=response_format,
+    )
+
+    assert result == '{"translations":[]}'
+    assert seen["payload"]["response_format"] == response_format
+    assert set(seen["payload"]) == {"model", "messages", "response_format"}
+
+
 @pytest.mark.parametrize(
     ("response", "message"),
     [
