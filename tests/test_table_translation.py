@@ -42,6 +42,50 @@ def test_extracts_caption_th_and_td_but_skips_numeric_and_hidden_text():
     assert "Ignored" not in serialized
 
 
+def test_builds_strict_response_format_for_current_node_ids():
+    prepared = prepare_table_translation(
+        "<table><tr><th>Component</th><td>Mass Fraction</td></tr></table>"
+    )
+
+    response_format = prepared.build_response_format()
+
+    assert response_format == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "table_translation",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "translations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {
+                                    "type": "string",
+                                    "enum": [
+                                        "table-text-0001",
+                                        "table-text-0002",
+                                    ],
+                                },
+                                "text": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                },
+                            },
+                            "required": ["id", "text"],
+                            "additionalProperties": False,
+                        },
+                    }
+                },
+                "required": ["translations"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
 def test_applies_reordered_ids_and_preserves_tags_attributes_and_whitespace():
     source = (
         '<table class="source"><tr>'
@@ -153,3 +197,6 @@ def test_table_with_no_eligible_text_builds_no_model_payload():
     assert prepared.nodes == ()
     with pytest.raises(TableTranslationError, match="没有待翻译节点"):
         prepared.build_request()
+
+    with pytest.raises(TableTranslationError, match="没有待翻译节点"):
+        prepared.build_response_format()

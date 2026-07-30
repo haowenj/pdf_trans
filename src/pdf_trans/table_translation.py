@@ -67,6 +67,43 @@ class PreparedTableTranslation:
             separators=(",", ":"),
         )
 
+    def build_response_format(self) -> dict[str, object]:
+        if not self.nodes:
+            raise TableTranslationError("表格没有待翻译节点")
+        node_ids = [node.node_id for node in self.nodes]
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "table_translation",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "translations": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": {
+                                        "type": "string",
+                                        "enum": node_ids,
+                                    },
+                                    "text": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                },
+                                "required": ["id", "text"],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["translations"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
     def apply_response(self, response: str) -> str:
         translations = _parse_response(
             response,
