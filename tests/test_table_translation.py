@@ -1,9 +1,12 @@
+import json
 import re
 
 import pytest
 
 from pdf_trans.table_translation import (
+    CellWorkItem,
     TableTranslationError,
+    plan_cell_batches,
     prepare_table_translation,
 )
 
@@ -223,3 +226,161 @@ def test_rebuild_rejects_marker_tampering_for_only_that_cell():
     )
     assert result.fallback_cell_count == 1
     assert re.search("新增|缺失", result.fallbacks[0].error)
+
+
+def work_item(
+    number: int,
+    *,
+    tokens: int = 10,
+    formulas: int = 0,
+) -> CellWorkItem:
+    return CellWorkItem(
+        work_id=f"cell-{number:04d}",
+        cell_id=f"cell-{number:04d}",
+        segment_index=0,
+        model_text=f"Text {number}",
+        estimated_tokens=tokens,
+        formula_count=formulas,
+    )
+
+
+def test_batch_planner_enforces_item_token_and_formula_limits():
+    by_items = plan_cell_batches(
+        tuple(work_item(number) for number in range(1, 14)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )
+    by_tokens = plan_cell_batches(
+        (work_item(1, tokens=1_500), work_item(2, tokens=600)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )
+    by_formulas = plan_cell_batches(
+        (work_item(1, formulas=20), work_item(2, formulas=5)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )
+
+    assert [len(batch.items) for batch in by_items] == [12, 1]
+    assert [len(batch.items) for batch in by_tokens] == [1, 1]
+    assert [len(batch.items) for batch in by_formulas] == [1, 1]
+
+
+def test_batch_planner_keeps_one_individually_oversized_item():
+    batches = plan_cell_batches(
+        (work_item(1, tokens=2_500), work_item(2)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )
+
+    assert [batch.items[0].work_id for batch in batches] == [
+        "cell-0001",
+        "cell-0002",
+    ]
+
+
+def test_batch_request_and_schema_only_contain_current_work_items():
+    batch = plan_cell_batches(
+        (work_item(1), work_item(2)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )[0]
+
+    request = json.loads(batch.build_request())
+    schema = batch.build_response_format()
+
+    assert request["cells"] == [
+        {"cell_id": "cell-0001", "text": "Text 1"},
+        {"cell_id": "cell-0002", "text": "Text 2"},
+    ]
+    assert schema["json_schema"]["schema"]["properties"]["cells"][
+        "items"
+    ]["properties"]["cell_id"]["enum"] == ["cell-0001", "cell-0002"]
+    serialized = json.dumps(request, ensure_ascii=False)
+    assert "translated_text" not in serialized
+
+
+def test_partial_response_keeps_valid_item_and_isolates_missing_duplicate():
+    batch = plan_cell_batches(
+        (work_item(1), work_item(2), work_item(3)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )[0]
+    response = json.dumps(
+        {
+            "cells": [
+                {"cell_id": "cell-0001", "translated_text": "甲"},
+                {"cell_id": "cell-0002", "translated_text": "乙"},
+                {"cell_id": "cell-0002", "translated_text": "重复"},
+                {"cell_id": "cell-9999", "translated_text": "未知"},
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    parsed = batch.parse_response(response)
+
+    assert parsed.translations == {"cell-0001": "甲"}
+    assert parsed.errors == {
+        "cell-0002": "模型结果存在重复 cell_id",
+        "cell-0003": "模型结果缺少 cell_id",
+    }
+    assert parsed.warnings == ("模型结果包含未知 cell_id: cell-9999",)
+
+
+def test_invalid_item_fields_only_fail_that_expected_cell():
+    batch = plan_cell_batches(
+        (work_item(1), work_item(2)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )[0]
+
+    parsed = batch.parse_response(
+        json.dumps(
+            {
+                "cells": [
+                    {
+                        "cell_id": "cell-0001",
+                        "translated_text": "甲",
+                        "extra": True,
+                    },
+                    {
+                        "cell_id": "cell-0002",
+                        "translated_text": "乙",
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert parsed.translations == {"cell-0002": "乙"}
+    assert parsed.errors == {"cell-0001": "模型翻译项字段不一致"}
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        "not-json",
+        "[]",
+        '{"cells":{}}',
+        '{"cells":[],"extra":true}',
+    ],
+)
+def test_invalid_top_level_response_fails_the_batch(response):
+    batch = plan_cell_batches(
+        (work_item(1), work_item(2)),
+        max_items=12,
+        max_tokens=2_000,
+        max_formulas=24,
+    )[0]
+
+    with pytest.raises(TableTranslationError):
+        batch.parse_response(response)

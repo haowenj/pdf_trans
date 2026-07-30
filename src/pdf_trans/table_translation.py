@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -70,6 +71,137 @@ class CellWorkItem:
     model_text: str
     estimated_tokens: int
     formula_count: int
+
+
+@dataclass(frozen=True)
+class ParsedBatchResponse:
+    translations: dict[str, str]
+    errors: dict[str, str]
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CellTranslationBatch:
+    items: tuple[CellWorkItem, ...]
+
+    def __post_init__(self) -> None:
+        if not self.items:
+            raise ValueError("单元格翻译批次不能为空")
+
+    def build_request(self) -> str:
+        return json.dumps(
+            {
+                "task": (
+                    "Translate each cell text from English to Simplified "
+                    "Chinese. Return JSON only. Preserve every ⟦M...⟧ and "
+                    "⟦H...⟧ marker exactly and in the same order."
+                ),
+                "cells": [
+                    {
+                        "cell_id": item.work_id,
+                        "text": item.model_text,
+                    }
+                    for item in self.items
+                ],
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    def build_response_format(self) -> dict[str, object]:
+        work_ids = [item.work_id for item in self.items]
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "table_cell_translation",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "cells": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "cell_id": {
+                                        "type": "string",
+                                        "enum": work_ids,
+                                    },
+                                    "translated_text": {
+                                        "type": "string",
+                                        "minLength": 1,
+                                    },
+                                },
+                                "required": [
+                                    "cell_id",
+                                    "translated_text",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        }
+                    },
+                    "required": ["cells"],
+                    "additionalProperties": False,
+                },
+            },
+        }
+
+    def parse_response(self, response: str) -> ParsedBatchResponse:
+        try:
+            payload = json.loads(response)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise TableTranslationError(
+                "模型响应不是有效 JSON"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise TableTranslationError("模型响应必须是 JSON 对象")
+        if set(payload) != {"cells"}:
+            raise TableTranslationError("模型响应顶层字段不一致")
+        values = payload["cells"]
+        if not isinstance(values, list):
+            raise TableTranslationError("模型响应 cells 必须是数组")
+
+        expected_order = tuple(item.work_id for item in self.items)
+        expected = set(expected_order)
+        translations: dict[str, str] = {}
+        errors: dict[str, str] = {}
+        warnings: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            if not isinstance(value, dict):
+                warnings.append("模型结果包含非对象 cell 项")
+                continue
+            work_id = value.get("cell_id")
+            translated = value.get("translated_text")
+            if not isinstance(work_id, str) or not work_id:
+                warnings.append("模型结果包含无效 cell_id")
+                continue
+            if work_id not in expected:
+                warnings.append(
+                    f"模型结果包含未知 cell_id: {work_id}"
+                )
+                continue
+            if work_id in seen:
+                translations.pop(work_id, None)
+                errors[work_id] = "模型结果存在重复 cell_id"
+                continue
+            seen.add(work_id)
+            if set(value) != {"cell_id", "translated_text"}:
+                errors[work_id] = "模型翻译项字段不一致"
+                continue
+            if not isinstance(translated, str) or not translated.strip():
+                errors[work_id] = "模型返回空译文"
+                continue
+            translations[work_id] = translated.strip()
+
+        for work_id in expected_order:
+            if work_id not in seen:
+                errors[work_id] = "模型结果缺少 cell_id"
+        return ParsedBatchResponse(
+            translations=translations,
+            errors=errors,
+            warnings=tuple(warnings),
+        )
 
 
 @dataclass(frozen=True)
@@ -425,6 +557,38 @@ def _build_cell(raw: _RawCell) -> PreparedCell:
         work_ids=work_ids,
         skipped=False,
     )
+
+
+def plan_cell_batches(
+    items: tuple[CellWorkItem, ...],
+    *,
+    max_items: int = MAX_BATCH_ITEMS,
+    max_tokens: int = MAX_BATCH_TOKENS,
+    max_formulas: int = MAX_BATCH_FORMULAS,
+) -> tuple[CellTranslationBatch, ...]:
+    if min(max_items, max_tokens, max_formulas) <= 0:
+        raise ValueError("批次限制必须全部大于 0")
+    batches: list[CellTranslationBatch] = []
+    current: list[CellWorkItem] = []
+    token_total = REQUEST_TOKEN_OVERHEAD
+    formula_total = 0
+    for item in items:
+        exceeds = bool(current) and (
+            len(current) + 1 > max_items
+            or token_total + item.estimated_tokens > max_tokens
+            or formula_total + item.formula_count > max_formulas
+        )
+        if exceeds:
+            batches.append(CellTranslationBatch(tuple(current)))
+            current = []
+            token_total = REQUEST_TOKEN_OVERHEAD
+            formula_total = 0
+        current.append(item)
+        token_total += item.estimated_tokens
+        formula_total += item.formula_count
+    if current:
+        batches.append(CellTranslationBatch(tuple(current)))
+    return tuple(batches)
 
 
 def prepare_table_translation(
