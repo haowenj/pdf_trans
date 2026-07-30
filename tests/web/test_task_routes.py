@@ -52,6 +52,8 @@ def test_upload_maps_validation_errors(web_client, monkeypatch) -> None:
 def test_missing_task_routes_return_404(web_client) -> None:
     assert web_client.post("/tasks/missing/resume").status_code == 404
     assert web_client.get("/tasks/missing/logs").status_code == 404
+    assert web_client.get("/tasks/missing/logs/recent").status_code == 404
+    assert web_client.get("/tasks/missing/logs/download").status_code == 404
 
 
 def test_log_history_uses_after_id(web_client, repository) -> None:
@@ -63,6 +65,47 @@ def test_log_history_uses_after_id(web_client, repository) -> None:
 
     assert response.status_code == 200
     assert [item["message"] for item in response.json()] == ["second"]
+
+
+def test_recent_log_route_returns_latest_200_in_order(
+    web_client,
+    repository,
+) -> None:
+    repository.create_task("a", "a.pdf", "tasks/a/upload/source.pdf")
+    for index in range(205):
+        repository.append_log("a", "INFO", f"log-{index}")
+
+    response = web_client.get("/tasks/a/logs/recent")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 200
+    assert payload[0]["message"] == "log-5"
+    assert payload[-1]["message"] == "log-204"
+    assert [item["id"] for item in payload] == sorted(
+        item["id"] for item in payload
+    )
+
+
+def test_complete_log_download_streams_every_log(
+    web_client,
+    repository,
+) -> None:
+    repository.create_task("a", "a.pdf", "tasks/a/upload/source.pdf")
+    for index in range(505):
+        level = "WARNING" if index == 504 else "INFO"
+        repository.append_log("a", level, f"log-{index}")
+
+    response = web_client.get("/tasks/a/logs/download")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain")
+    assert "attachment;" in response.headers["content-disposition"]
+    assert 'filename="task-a.log"' in response.headers["content-disposition"]
+    lines = response.text.splitlines()
+    assert len(lines) == 505
+    assert lines[0] == "[INFO] log-0"
+    assert lines[-1] == "[WARNING] log-504"
 
 
 def _create_failed_task(repository, task_id: str) -> None:

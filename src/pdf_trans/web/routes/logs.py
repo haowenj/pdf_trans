@@ -1,12 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from pdf_trans.web.repository import TaskNotFound
+from pdf_trans.web.repository import TaskNotFound, TaskRepository
 from pdf_trans.web.streams import log_event_stream, log_to_dict
 
 router = APIRouter()
+DOWNLOAD_PAGE_SIZE = 500
+
+
+def iter_log_lines(
+    repository: TaskRepository,
+    task_id: str,
+) -> Iterator[str]:
+    cursor = 0
+    while True:
+        logs = repository.list_logs(
+            task_id,
+            after_id=cursor,
+            limit=DOWNLOAD_PAGE_SIZE,
+        )
+        if not logs:
+            return
+        for log in logs:
+            cursor = log.id
+            yield f"[{log.level}] {log.message}\n"
 
 
 @router.get("/tasks/{task_id}/logs")
@@ -22,6 +43,39 @@ def task_logs(
     except TaskNotFound as exc:
         raise HTTPException(404, "任务不存在") from exc
     return [log_to_dict(log) for log in logs]
+
+
+@router.get("/tasks/{task_id}/logs/recent")
+def recent_task_logs(
+    request: Request,
+    task_id: str,
+) -> list[dict[str, object]]:
+    try:
+        logs = request.app.state.repository.list_recent_logs(task_id)
+    except TaskNotFound as exc:
+        raise HTTPException(404, "任务不存在") from exc
+    return [log_to_dict(log) for log in logs]
+
+
+@router.get("/tasks/{task_id}/logs/download")
+def download_task_logs(
+    request: Request,
+    task_id: str,
+) -> StreamingResponse:
+    repository = request.app.state.repository
+    try:
+        repository.get_task(task_id)
+    except TaskNotFound as exc:
+        raise HTTPException(404, "任务不存在") from exc
+    return StreamingResponse(
+        iter_log_lines(repository, task_id),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="task-{task_id}.log"'
+            )
+        },
+    )
 
 
 @router.get("/tasks/{task_id}/logs/events")
