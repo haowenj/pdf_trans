@@ -1,4 +1,3 @@
-import json
 import re
 
 import pytest
@@ -9,171 +8,61 @@ from pdf_trans.table_translation import (
 )
 
 
-def response(*items):
-    return json.dumps(
-        {
-            "translations": [
-                {"id": node_id, "text": text}
-                for node_id, text in items
-            ]
-        },
-        ensure_ascii=False,
-    )
-
-
-def test_extracts_caption_th_and_td_but_skips_numeric_and_hidden_text():
-    prepared = prepare_table_translation(
-        "<table><caption>Operating Data</caption>"
-        "<tr><th>Component</th><th>123</th></tr>"
-        "<tr><td>  Ethanol  </td><td><script>Ignored</script>42</td></tr>"
-        "</table>"
-    )
-
-    payload = json.loads(prepared.build_request())
-
-    assert payload["items"] == [
-        {"id": "table-text-0001", "text": "Operating Data"},
-        {"id": "table-text-0002", "text": "Component"},
-        {"id": "table-text-0003", "text": "Ethanol"},
-    ]
-    serialized = json.dumps(payload, ensure_ascii=False)
-    assert "<table" not in serialized
-    assert "123" not in serialized
-    assert "42" not in serialized
-    assert "Ignored" not in serialized
-
-
-def test_builds_strict_response_format_for_current_node_ids():
-    prepared = prepare_table_translation(
-        "<table><tr><th>Component</th><td>Mass Fraction</td></tr></table>"
-    )
-
-    response_format = prepared.build_response_format()
-
-    assert response_format == {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "table_translation",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "translations": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "enum": [
-                                        "table-text-0001",
-                                        "table-text-0002",
-                                    ],
-                                },
-                                "text": {
-                                    "type": "string",
-                                    "minLength": 1,
-                                },
-                            },
-                            "required": ["id", "text"],
-                            "additionalProperties": False,
-                        },
-                    }
-                },
-                "required": ["translations"],
-                "additionalProperties": False,
-            },
-        },
-    }
-
-
-def test_applies_reordered_ids_and_preserves_tags_attributes_and_whitespace():
+def test_extracts_stable_cells_and_never_sends_outer_html_or_attributes():
     source = (
-        '<table class="source"><tr>'
-        '<th rowspan="2"> Component </th>'
-        '<td colspan="3"><em>Mass</em> Fraction</td>'
-        '<td data-code="A1">100</td>'
-        "</tr></table>"
+        '<table class="source"><caption>Operating Data</caption>'
+        '<tr><th rowspan="2">Component</th><th>123</th></tr>'
+        '<tr><td colspan="3"><em>Mass</em> Fraction</td>'
+        '<td data-code="A1">D1298 / IP 160</td></tr></table>'
     )
+
     prepared = prepare_table_translation(source)
-    request = prepared.build_request()
 
-    translated = prepared.apply_response(
-        response(
-            ("table-text-0003", "分数"),
-            ("table-text-0001", "组分"),
-            ("table-text-0002", "质量"),
-        )
+    assert [cell.cell_id for cell in prepared.cells] == [
+        "cell-0001",
+        "cell-0002",
+        "cell-0003",
+        "cell-0004",
+        "cell-0005",
+    ]
+    assert [work.work_id for work in prepared.work_items] == [
+        "cell-0001",
+        "cell-0002",
+        "cell-0004",
+    ]
+    serialized = " ".join(
+        f"{work.work_id}:{work.model_text}"
+        for work in prepared.work_items
     )
+    assert "<table" not in serialized
+    assert "<em" not in serialized
+    assert "rowspan" not in serialized
+    assert "colspan" not in serialized
+    assert "data-code" not in serialized
+    assert "⟦H0⟧Mass⟦H1⟧ Fraction" in serialized
 
-    assert translated == (
-        '<table class="source"><tr>'
-        '<th rowspan="2"> 组分 </th>'
-        '<td colspan="3"><em>质量</em> 分数</td>'
-        '<td data-code="A1">100</td>'
+
+def test_formula_ids_restart_in_each_cell_and_latex_is_hidden():
+    first = r"${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
+    second = r"$x^{2}+\frac{a}{b}$ and $y_{1}$"
+    source = (
+        "<table><tr>"
+        f"<td>Density {first}</td>"
+        f"<td>Values {second}</td>"
         "</tr></table>"
     )
-    assert 'rowspan="2"' in translated
-    assert 'colspan="3"' in translated
-    assert 'data-code="A1"' in translated
-    assert "rowspan" not in request
-    assert "colspan" not in request
-    assert "data-code" not in request
-    assert "A1" not in request
 
+    prepared = prepare_table_translation(source)
 
-def test_escapes_translated_text_without_changing_structure():
-    prepared = prepare_table_translation(
-        "<table><tr><td>Salt and water</td></tr></table>"
+    assert [work.model_text for work in prepared.work_items] == [
+        "Density ⟦M0⟧",
+        "Values ⟦M0⟧ and ⟦M1⟧",
+    ]
+    request_text = " ".join(
+        work.model_text for work in prepared.work_items
     )
-
-    translated = prepared.apply_response(
-        response(("table-text-0001", "盐 < 水 & 乙醇"))
-    )
-
-    assert translated == (
-        "<table><tr><td>盐 &lt; 水 &amp; 乙醇</td></tr></table>"
-    )
-
-
-@pytest.mark.parametrize(
-    ("raw_response", "message"),
-    [
-        ("not json", "响应不是有效 JSON"),
-        (
-            json.dumps({"translations": []}),
-            "结果数量不一致",
-        ),
-        (
-            response(("table-text-9999", "错误节点")),
-            "ID 集合不一致",
-        ),
-        (
-            response(
-                ("table-text-0001", "甲"),
-                ("table-text-0001", "乙"),
-            ),
-            "存在重复 ID",
-        ),
-        (
-            json.dumps(
-                {
-                    "translations": [
-                        {"id": "table-text-0001", "text": "   "}
-                    ]
-                }
-            ),
-            "译文不能为空",
-        ),
-    ],
-)
-def test_rejects_invalid_batch_responses(raw_response, message):
-    prepared = prepare_table_translation(
-        "<table><tr><td>Alpha</td></tr></table>"
-    )
-
-    with pytest.raises(TableTranslationError, match=message):
-        prepared.apply_response(raw_response)
+    assert r"\circ" not in request_text
+    assert r"\frac" not in request_text
 
 
 @pytest.mark.parametrize(
@@ -190,85 +79,147 @@ def test_rejects_blank_non_table_or_unbalanced_html(source):
         prepare_table_translation(source)
 
 
-def test_table_with_no_eligible_text_builds_no_model_payload():
-    prepared = prepare_table_translation(
-        "<table><tr><td>123.45</td><td>--</td><td>中文</td></tr></table>"
-    )
-
-    assert prepared.nodes == ()
-    with pytest.raises(TableTranslationError, match="没有待翻译节点"):
-        prepared.build_request()
-
-    with pytest.raises(TableTranslationError, match="没有待翻译节点"):
-        prepared.build_response_format()
-
-
-def test_table_request_hides_formulas_and_restores_them_in_original_cells():
-    formula_one = r"${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
-    formula_two = r"$x^{2}+\frac{a}{b}$"
+def test_rebuilds_only_successful_cells_and_preserves_exact_outer_structure():
+    formula = r"${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
     source = (
         '<table class="source"><tr>'
-        f'<td rowspan="2">Temperature {formula_one}</td>'
-        f'<td colspan="3">First {formula_two} then $y_{{1}}$</td>'
+        f'<td rowspan="2">Density {formula}</td>'
+        '<td colspan="3"><em>Mass</em> Fraction</td>'
+        '<td data-code="A1">Failure $x$</td>'
         "</tr></table>"
     )
     prepared = prepare_table_translation(source)
-    payload = json.loads(prepared.build_request())
 
-    serialized = json.dumps(payload, ensure_ascii=False)
-    assert formula_one not in serialized
-    assert formula_two not in serialized
-    assert r"\circ" not in serialized
-    assert len(
+    result = prepared.rebuild(
         {
-            value
-            for value in re.findall(
-                r"⟪PDFTRANS_FORMULA:[^⟫]+⟫", serialized
+            "cell-0001": "密度 ⟦M0⟧",
+            "cell-0002": "⟦H0⟧质量⟦H1⟧ 分数",
+        },
+        {"cell-0003": "公式占位符被篡改"},
+    )
+
+    assert result.translated_html == (
+        '<table class="source"><tr>'
+        f'<td rowspan="2">密度 {formula}</td>'
+        '<td colspan="3"><em>质量</em> 分数</td>'
+        '<td data-code="A1">Failure $x$</td>'
+        "</tr></table>"
+    )
+    assert result.success_cell_count == 2
+    assert result.fallback_cell_count == 1
+    assert result.fallbacks[0].cell_id == "cell-0003"
+    assert result.fallbacks[0].error == "公式占位符被篡改"
+    assert 'rowspan="2"' in result.translated_html
+    assert 'colspan="3"' in result.translated_html
+    assert 'data-code="A1"' in result.translated_html
+
+
+def test_escapes_model_text_but_restores_original_inline_html_and_entities():
+    source = (
+        '<table><tr><td><strong class="x">Salt</strong>'
+        " &amp; water</td></tr></table>"
+    )
+    prepared = prepare_table_translation(source)
+
+    work = prepared.work_items[0]
+    assert work.model_text == "⟦H0⟧Salt⟦H1⟧ ⟦H2⟧ water"
+    result = prepared.rebuild(
+        {
+            work.work_id: (
+                "⟦H0⟧盐⟦H1⟧ ⟦H2⟧ 水 < 乙醇"
             )
-        }
-    ) == 3
+        },
+        {},
+    )
 
-    translated_items = []
-    for item in payload["items"]:
-        translated_items.append(
-            (
-                item["id"],
-                item["text"]
-                .replace("Temperature", "温度")
-                .replace("First", "先")
-                .replace("then", "后"),
-            )
-        )
-    translated = prepared.apply_response(response(*reversed(translated_items)))
-
-    assert formula_one in translated
-    assert formula_two in translated
-    assert "$y_{1}$" in translated
-    assert 'class="source"' in translated
-    assert 'rowspan="2"' in translated
-    assert 'colspan="3"' in translated
+    assert result.translated_html == (
+        '<table><tr><td><strong class="x">盐</strong>'
+        " &amp; 水 &lt; 乙醇</td></tr></table>"
+    )
 
 
-def test_table_rejects_formula_moved_between_cells():
+def test_skips_empty_numeric_formula_hidden_and_standard_code_cells():
     prepared = prepare_table_translation(
+        "<table><tr>"
+        "<td> </td><td>775 to 840</td><td>$x^{2}$</td>"
+        "<td>D1298 / IP 160</td><td>D1298 or IP 160</td>"
+        "<td><script>Ignored English</script>123</td>"
+        "<td>中文</td>"
+        "</tr></table>"
+    )
+
+    assert [work.work_id for work in prepared.work_items] == [
+        "cell-0002",
+        "cell-0005",
+    ]
+
+
+def test_standard_codes_are_skipped_only_when_the_whole_cell_matches():
+    prepared = prepare_table_translation(
+        "<table><tr>"
+        "<td>ASTM D1298</td><td>IP 160, UOP 365</td>"
+        "<td>Use ASTM D1298</td><td>D1298 and IP 160</td>"
+        "</tr></table>"
+    )
+
+    assert [work.work_id for work in prepared.work_items] == [
+        "cell-0003",
+        "cell-0004",
+    ]
+
+
+def test_any_failed_segment_falls_back_the_whole_cell():
+    long_text = "First sentence. " * 700
+    source = f"<table><tr><td>{long_text}</td></tr></table>"
+    prepared = prepare_table_translation(source)
+    assert len(prepared.work_items) > 1
+    translations = {
+        work.work_id: "第一句。"
+        for work in prepared.work_items[:-1]
+    }
+    last = prepared.work_items[-1]
+
+    result = prepared.rebuild(
+        translations,
+        {last.work_id: "模型返回空译文"},
+    )
+
+    assert result.translated_html == source
+    assert result.success_cell_count == 0
+    assert result.fallback_cell_count == 1
+    assert result.fallbacks == (
+        type(result.fallbacks[0])("cell-0001", "模型返回空译文"),
+    )
+
+
+def test_segment_lookup_returns_local_context_and_rejects_unknown_id():
+    prepared = prepare_table_translation(
+        "<table><tr><td>Alpha $x$</td></tr></table>"
+    )
+
+    segment = prepared.segment_for("cell-0001")
+
+    assert segment.model_text == "Alpha ⟦M0⟧"
+    with pytest.raises(KeyError, match="cell-9999"):
+        prepared.segment_for("cell-9999")
+
+
+def test_rebuild_rejects_marker_tampering_for_only_that_cell():
+    source = (
         "<table><tr><td>Alpha $x$</td><td>Beta $y$</td></tr></table>"
     )
-    payload = json.loads(prepared.build_request())
-    first = payload["items"][0]["text"]
-    second = payload["items"][1]["text"]
-    first_token = re.search(r"⟪PDFTRANS_FORMULA:[^⟫]+⟫", first).group(0)
-    second_token = re.search(r"⟪PDFTRANS_FORMULA:[^⟫]+⟫", second).group(0)
+    prepared = prepare_table_translation(source)
 
-    with pytest.raises(TableTranslationError, match="缺失|新增"):
-        prepared.apply_response(
-            response(
-                (
-                    payload["items"][0]["id"],
-                    first.replace(first_token, second_token),
-                ),
-                (
-                    payload["items"][1]["id"],
-                    second.replace(second_token, first_token),
-                ),
-            )
-        )
+    result = prepared.rebuild(
+        {
+            "cell-0001": "甲 ⟦M0⟧",
+            "cell-0002": "乙 ⟦M1⟧",
+        },
+        {},
+    )
+
+    assert result.translated_html == (
+        "<table><tr><td>甲 $x$</td><td>Beta $y$</td></tr></table>"
+    )
+    assert result.fallback_cell_count == 1
+    assert re.search("新增|缺失", result.fallbacks[0].error)
