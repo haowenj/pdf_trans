@@ -267,8 +267,13 @@ def test_rejects_normalizer_that_attempts_a_change(tmp_path):
 def test_logs_counts_and_problem_pages_without_formula_source(
     tmp_path,
     caplog,
+    monkeypatch,
 ):
     source = _write_source(tmp_path)
+    package_logger = logging.getLogger("pdf_trans")
+    monkeypatch.setattr(package_logger, "handlers", [])
+    monkeypatch.setattr(package_logger, "propagate", True)
+    monkeypatch.setattr(package_logger, "level", logging.NOTSET)
     caplog.set_level(logging.INFO, logger="pdf_trans.formula_audit")
 
     audit_content_list_file(

@@ -226,6 +226,7 @@ MinerU 结果解压到数据目录，并按以下顺序生成处理结果：
 
 ```text
 content_list.json
+  -> formula_audit.json（只读公式审计报告）
   -> cleaned_content_list.json
   -> cross_page_candidates.json（诊断报告）
   -> normalized_content_list.json
@@ -245,6 +246,25 @@ data/runs/cli-<uuid>/
 
 `task.json` 记录任务状态和产物引用，`task.log` 保存无终端颜色的完整流程日志，
 `mineru_result.zip` 是 MinerU 返回、尚未解压的原始结果包。
+
+### 公式审计
+
+完整 Web 工作流在 MinerU 解压并定位原始 `*_content_list.json` 后、清洗和翻译前生成
+`formula_audit.json`。审计只读取 MinerU 原始内容，不修改 `text`、`table_body` 或任何
+原始公式。
+
+审计范围包括 `type=equation` 的独立公式、所有 `text` 字段中的行内和块级公式，以及
+`table_body` 的每个 `td`/`th` 单元格。全部公式通过一个 Node 进程批量交给前端同版本、
+同配置的本地 KaTeX 0.18.1 校验，不会为每条公式单独启动进程。
+
+报告为每条公式记录稳定 `formula_id`、`page_idx`、`bbox`、来源字段路径、表格行列、
+原始公式和内容哈希。语法状态区分 `valid` 与 `invalid_syntax`；`suspicious` 是独立
+标记，因此语法有效的公式仍可能被列为可疑。第一版只标记已知 MinerU 异常模式，
+`normalized_formula`、`normalization_rule` 和 `confidence` 保留为空，不做自动修复。
+
+公式语法失败或内容可疑不会阻断翻译。审计基础设施无法运行、原始文件无法读取或报告
+无法可靠写入时，任务会在翻译前失败。页面继续任务时会复用有效审计报告；旧任务存在
+规范化断点但缺少报告时，会先从原始 content list 补做审计。
 
 `--translate-only` 同样会生成 `data/runs/cli-<uuid>/` 下的 `task.json` 和
 `task.log`，但翻译文件和 Markdown 仍写在指定的

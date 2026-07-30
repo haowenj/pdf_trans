@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from pdf_trans.errors import FormulaAuditError
 from pdf_trans.web.config import WebSettings
 from pdf_trans.web.repository import TaskView
 from pdf_trans.web.task_runner import (
@@ -40,6 +41,38 @@ def settings(tmp_path) -> WebSettings:
         mineru_server_url="http://gpustack:8000",
         host="127.0.0.1",
         port=8000,
+    )
+
+
+def make_checkpoint(tmp_path):
+    normalized = (
+        tmp_path
+        / "tasks/a/attempts/1/paper/normalized_content_list.json"
+    )
+    normalized.parent.mkdir(parents=True)
+    normalized.write_text("[]", encoding="utf-8")
+    translated = normalized.with_name("translated_content_list.json")
+    translated.write_text("[]", encoding="utf-8")
+    return normalized
+
+
+def fake_audit_report():
+    return SimpleNamespace(
+        stats=SimpleNamespace(
+            total_formulas=0,
+            invalid_syntax_count=0,
+            suspicious_count=0,
+        ),
+        invalid_syntax_page_indices=(),
+        suspicious_page_indices=(),
+    )
+
+
+def fake_translation_result(path):
+    return SimpleNamespace(
+        normalized_path=path,
+        translated_path=path.with_name("translated_content_list.json"),
+        stats=SimpleNamespace(success_count=3, failed_count=0),
     )
 
 
@@ -94,14 +127,12 @@ def test_runner_starts_full_workflow_when_no_checkpoint_exists(tmp_path):
 
 
 def test_runner_resumes_translation_and_renders_markdown(tmp_path):
-    normalized = (
-        tmp_path
-        / "tasks/a/attempts/1/paper/normalized_content_list.json"
+    normalized = make_checkpoint(tmp_path)
+    normalized.with_name("source_content_list.json").write_text(
+        "[]",
+        encoding="utf-8",
     )
-    normalized.parent.mkdir(parents=True)
-    normalized.write_text("[]", encoding="utf-8")
     translated = normalized.with_name("translated_content_list.json")
-    translated.write_text("[]", encoding="utf-8")
     calls: list[tuple[object, ...]] = []
 
     def translate(path):
@@ -125,6 +156,119 @@ def test_runner_resumes_translation_and_renders_markdown(tmp_path):
     assert calls[0] == ("translate", normalized)
     assert calls[1][2] == normalized.with_name("rendered.md")
     assert result.resumed is True
+
+
+def test_runner_reuses_valid_formula_audit_before_resume(tmp_path):
+    normalized = make_checkpoint(tmp_path)
+    audit = normalized.with_name("formula_audit.json")
+    audit.write_text('{"schema_version": 1}', encoding="utf-8")
+    calls = []
+
+    def read_report(path):
+        calls.append(("read_audit", path))
+        return fake_audit_report()
+
+    def translate(path):
+        calls.append(("translate", path))
+        return fake_translation_result(path)
+
+    def render(source, output):
+        output.write_text("# resumed", encoding="utf-8")
+
+    def fail_audit(source, output):
+        raise AssertionError("existing report must be reused")
+
+    runner = TaskRunner(
+        settings(tmp_path),
+        WorkflowServices(
+            lambda *args, **kwargs: None,
+            translate,
+            render,
+            fail_audit,
+            read_report,
+        ),
+    )
+
+    runner.run(task_view(attempt_count=2))
+
+    assert calls[:2] == [
+        ("read_audit", audit),
+        ("translate", normalized),
+    ]
+
+
+def test_runner_backfills_legacy_formula_audit_before_resume(tmp_path):
+    normalized = make_checkpoint(tmp_path)
+    source = normalized.with_name("source_content_list.json")
+    source.write_text("[]", encoding="utf-8")
+    audit = normalized.with_name("formula_audit.json")
+    calls = []
+
+    def create_audit(source_path, output_path):
+        calls.append(("audit", source_path, output_path))
+        output_path.write_text("{}", encoding="utf-8")
+        return fake_audit_report()
+
+    def translate(path):
+        calls.append(("translate", path))
+        return fake_translation_result(path)
+
+    def render(source_path, output_path):
+        output_path.write_text("# resumed", encoding="utf-8")
+
+    runner = TaskRunner(
+        settings(tmp_path),
+        WorkflowServices(
+            lambda *args, **kwargs: None,
+            translate,
+            render,
+            create_audit,
+            lambda path: (_ for _ in ()).throw(
+                AssertionError("missing report must not be read")
+            ),
+        ),
+    )
+
+    runner.run(task_view(attempt_count=2))
+
+    assert calls[:2] == [
+        ("audit", source, audit),
+        ("translate", normalized),
+    ]
+    assert audit.exists()
+
+
+@pytest.mark.parametrize("raw_count", [0, 2])
+def test_runner_rejects_non_unique_raw_content_list_on_resume(
+    tmp_path,
+    raw_count,
+):
+    normalized = make_checkpoint(tmp_path)
+    for index in range(raw_count):
+        normalized.with_name(
+            f"source_{index}_content_list.json"
+        ).write_text("[]", encoding="utf-8")
+    calls = []
+
+    def translate(path):
+        calls.append("translate")
+        return fake_translation_result(path)
+
+    runner = TaskRunner(
+        settings(tmp_path),
+        WorkflowServices(
+            lambda *args, **kwargs: None,
+            translate,
+            lambda source, output: None,
+            lambda source, output: fake_audit_report(),
+            lambda path: fake_audit_report(),
+        ),
+    )
+
+    with pytest.raises(FormulaAuditError, match=f"实际找到 {raw_count} 个"):
+        runner.run(task_view(attempt_count=2))
+
+    assert calls == []
 
 
 def test_runner_rejects_multiple_normalized_checkpoints(tmp_path):

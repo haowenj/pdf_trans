@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from pdf_trans.errors import FormulaAuditError
+from pdf_trans.formula_audit import (
+    FormulaAuditReport,
+    audit_content_list_file,
+    log_formula_audit_summary,
+    read_formula_audit_file,
+)
 from pdf_trans.renderer import render_content_list_file
 from pdf_trans.workflow import (
     TranslationFileResult,
@@ -16,11 +24,27 @@ from pdf_trans.web.repository import TaskView
 from pdf_trans.web.storage import resolve_stored_path
 
 
+LOGGER = logging.getLogger(__name__)
+_GENERATED_CONTENT_LIST_NAMES = {
+    "cleaned_content_list.json",
+    "normalized_content_list.json",
+    "translated_content_list.json",
+}
+
+
 @dataclass(frozen=True)
 class WorkflowServices:
     process_pdf: Callable[..., WorkflowResult]
     process_translation_file: Callable[..., TranslationFileResult]
     render_content_list_file: Callable[[Path, Path], None]
+    audit_content_list_file: Callable[
+        [Path, Path],
+        FormulaAuditReport,
+    ] = audit_content_list_file
+    read_formula_audit_file: Callable[
+        [Path],
+        FormulaAuditReport,
+    ] = read_formula_audit_file
 
 
 @dataclass(frozen=True)
@@ -33,6 +57,20 @@ class TaskArtifacts:
 
 class AmbiguousCheckpoint(RuntimeError):
     pass
+
+
+def _original_content_list(normalized: Path) -> Path:
+    candidates = sorted(
+        path
+        for path in normalized.parent.glob("*_content_list.json")
+        if path.name not in _GENERATED_CONTENT_LIST_NAMES
+    )
+    if len(candidates) != 1:
+        raise FormulaAuditError(
+            "断点续传前需要唯一的 MinerU 原始 content list，"
+            f"实际找到 {len(candidates)} 个"
+        )
+    return candidates[0]
 
 
 class TaskRunner:
@@ -60,6 +98,7 @@ class TaskRunner:
 
         if checkpoints:
             normalized = checkpoints[0]
+            self._ensure_formula_audit(normalized)
             result = self.services.process_translation_file(normalized)
             markdown = normalized.with_name("rendered.md")
             self.services.render_content_list_file(
@@ -95,6 +134,15 @@ class TaskRunner:
             False,
             summary,
         )
+
+    def _ensure_formula_audit(self, normalized: Path) -> None:
+        audit_path = normalized.with_name("formula_audit.json")
+        if audit_path.is_file():
+            report = self.services.read_formula_audit_file(audit_path)
+            log_formula_audit_summary(report, LOGGER)
+            return
+        source = _original_content_list(normalized)
+        self.services.audit_content_list_file(source, audit_path)
 
     def _artifacts(
         self,
