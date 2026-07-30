@@ -12,6 +12,10 @@ ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 COPY pyproject.toml README.md ./
 COPY src ./src
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN python -m pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" '.[web]' \
     && useradd --create-home --uid 10001 appuser \
     && mkdir -p /app/data/web \
