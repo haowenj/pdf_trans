@@ -61,6 +61,25 @@ def test_repository_persists_ordered_logs_and_success_artifacts(
     assert task.finished_at is not None
 
 
+def test_repository_lists_only_latest_200_logs_in_ascending_order(
+    repository,
+) -> None:
+    repository.create_task("a", "a.pdf", "tasks/a/upload/source.pdf")
+    created = [
+        repository.append_log("a", "INFO", f"log-{index}")
+        for index in range(205)
+    ]
+
+    recent = repository.list_recent_logs("a")
+
+    assert len(recent) == 200
+    assert [log.id for log in recent] == [
+        log.id for log in created[-200:]
+    ]
+    assert recent[0].message == "log-5"
+    assert recent[-1].message == "log-204"
+
+
 def _finish_task(repository, task_id: str, status: str) -> None:
     repository.create_task(
         task_id,

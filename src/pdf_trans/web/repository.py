@@ -11,6 +11,7 @@ from pdf_trans.web.models import Task, TaskLog, utc_now
 
 RECOVERABLE_STATES = {"failed", "interrupted"}
 DELETABLE_STATES = RECOVERABLE_STATES | {"succeeded"}
+RECENT_LOG_LIMIT = 200
 
 
 class TaskNotFound(LookupError):
@@ -255,3 +256,16 @@ class TaskRepository:
         )
         with self._sessions() as session:
             return [_log_view(log) for log in session.scalars(statement)]
+
+    def list_recent_logs(self, task_id: str) -> list[LogView]:
+        self.get_task(task_id)
+        statement = (
+            select(TaskLog)
+            .where(TaskLog.task_id == task_id)
+            .order_by(TaskLog.id.desc())
+            .limit(RECENT_LOG_LIMIT)
+        )
+        with self._sessions() as session:
+            logs = [_log_view(log) for log in session.scalars(statement)]
+        logs.reverse()
+        return logs
