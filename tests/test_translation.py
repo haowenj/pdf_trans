@@ -8,7 +8,10 @@ import time
 import pytest
 
 from pdf_trans.errors import TranslationContentError
-from pdf_trans.table_translation import prepare_table_translation
+from pdf_trans.table_translation import (
+    plan_cell_batches,
+    prepare_table_translation,
+)
 from pdf_trans.translation import (
     TranslationStats,
     translate_content_list_file,
@@ -17,6 +20,7 @@ from pdf_trans.translation import (
 
 
 FORMULA_TOKEN_RE = re.compile(r"⟪PDFTRANS_FORMULA:[^⟫]+⟫")
+CELL_FORMULA_TOKEN_RE = re.compile(r"⟦M\d+⟧")
 
 
 class FakeTranslator:
@@ -521,12 +525,12 @@ class JsonTableTranslator:
         payload = json.loads(text)
         return json.dumps(
             {
-                "translations": [
+                "cells": [
                     {
-                        "id": item["id"],
-                        "text": self.translations[item["text"]],
+                        "cell_id": item["cell_id"],
+                        "translated_text": self.translations[item["text"]],
                     }
-                    for item in reversed(payload["items"])
+                    for item in reversed(payload["cells"])
                 ]
             },
             ensure_ascii=False,
@@ -563,13 +567,14 @@ def test_translate_file_batches_table_nodes_by_id_and_preserves_source_html(tmp_
 
     assert len(translator.received) == 1
     request = json.loads(translator.received[0])
-    assert [item["text"] for item in request["items"]] == [
+    assert [item["text"] for item in request["cells"]] == [
         "Component",
         "Mass Fraction",
         "Ethanol",
     ]
+    prepared = prepare_table_translation(table_body)
     assert translator.response_formats == [
-        prepare_table_translation(table_body).build_response_format()
+        plan_cell_batches(prepared.work_items)[0].build_response_format()
     ]
     result = read_items(output)[0]
     assert result["table_body"] == table_body
@@ -579,6 +584,10 @@ def test_translate_file_batches_table_nodes_by_id_and_preserves_source_html(tmp_
         "<tr><td>乙醇</td><td>100</td></tr></table>"
     )
     assert result["translation_status"] == "success"
+    assert result["table_translation_partial"] is False
+    assert result["table_translation_success_cell_count"] == 3
+    assert result["table_translation_fallback_cell_count"] == 0
+    assert result["table_translation_fallbacks"] == []
     assert stats == TranslationStats(0, 1, 0, 0, 0, 0)
 
 
@@ -592,20 +601,20 @@ class CorruptingTableFormulaTranslator:
         payload = json.loads(text)
         return json.dumps(
             {
-                "translations": [
+                "cells": [
                     {
-                        "id": item["id"],
-                        "text": FORMULA_TOKEN_RE.sub(
+                        "cell_id": item["cell_id"],
+                        "translated_text": CELL_FORMULA_TOKEN_RE.sub(
                             "", item["text"], count=1
                         ),
                     }
-                    for item in payload["items"]
+                    for item in payload["cells"]
                 ]
             }
         )
 
 
-def test_table_formula_validation_exhaustion_keeps_original_table(tmp_path):
+def test_table_formula_validation_exhaustion_falls_back_only_cell(tmp_path):
     source = tmp_path / "normalized_content_list.json"
     output = tmp_path / "translated_content_list.json"
     table_body = (
@@ -630,11 +639,13 @@ def test_table_formula_validation_exhaustion_keeps_original_table(tmp_path):
     assert len(translator.received) == 2
     result = read_items(output)[0]
     assert result["table_body"] == table_body
-    assert "translated_table_body" not in result
-    assert result["translation_status"] == "failed"
-    assert "表格节点 table-text-0001 公式校验失败" in result[
-        "translation_error"
-    ]
+    assert result["translated_table_body"] == table_body
+    assert result["translation_status"] == "success"
+    assert result["table_translation_partial"] is True
+    assert result["table_translation_success_cell_count"] == 0
+    assert result["table_translation_fallback_cell_count"] == 1
+    assert result["table_translation_fallbacks"][0]["cell_id"] == "cell-0001"
+    assert "公式占位符" in result["table_translation_fallbacks"][0]["error"]
 
 
 def test_numeric_only_table_makes_no_model_call_and_finishes_successfully(tmp_path):
@@ -656,6 +667,10 @@ def test_numeric_only_table_makes_no_model_call_and_finishes_successfully(tmp_pa
     result = read_items(output)[0]
     assert result["translation_status"] == "success"
     assert result["translated_table_body"] == table_body
+    assert result["table_translation_partial"] is False
+    assert result["table_translation_success_cell_count"] == 0
+    assert result["table_translation_fallback_cell_count"] == 0
+    assert result["table_translation_fallbacks"] == []
     assert stats.model_call_count == 0
 
 
@@ -702,12 +717,17 @@ def test_table_translation_exception_falls_back_and_document_continues(
     assert result[0]["translated_text"] == "正文"
     assert result[0]["translation_status"] == "success"
     assert result[1]["table_body"] == table_body
-    assert "translated_table_body" not in result[1]
-    assert result[1]["translation_status"] == "failed"
-    assert result[1]["translation_error"] == "table service unavailable"
+    assert result[1]["translated_table_body"] == table_body
+    assert result[1]["translation_status"] == "success"
+    assert result[1]["table_translation_partial"] is True
+    assert result[1]["table_translation_fallback_cell_count"] == 1
+    assert result[1]["table_translation_fallbacks"] == [
+        {"cell_id": "cell-0001", "error": "table service unavailable"}
+    ]
     assert stats == TranslationStats(1, 2, 0, 1, 0, 0)
     messages = "\n".join(record.getMessage() for record in caplog.records)
-    assert "第 1 张表翻译完成：failed" in messages
+    assert "第 1 张表翻译完成：success" in messages
+    assert "回退 1 个单元格" in messages
     assert table_body not in messages
 
 
@@ -770,18 +790,26 @@ def test_resume_skips_successful_table_by_original_table_body(tmp_path):
     )
 
     assert translator.received == []
-    assert read_items(output)[0]["translated_table_body"] == translated_table_body
+    resumed = read_items(output)[0]
+    assert resumed["translated_table_body"] == translated_table_body
+    assert resumed["table_translation_partial"] is False
+    assert resumed["table_translation_success_cell_count"] == 0
+    assert resumed["table_translation_fallback_cell_count"] == 0
+    assert resumed["table_translation_fallbacks"] == []
     assert stats == TranslationStats(0, 0, 0, 0, 0, 0)
 
 
 @pytest.mark.parametrize(
     "response_value",
     [
-        json.dumps({"translations": []}),
+        json.dumps({"cells": []}),
         json.dumps(
             {
-                "translations": [
-                    {"id": "table-text-9999", "text": "错误 ID"}
+                "cells": [
+                    {
+                        "cell_id": "cell-9999",
+                        "translated_text": "错误 ID",
+                    }
                 ]
             }
         ),
@@ -810,6 +838,176 @@ def test_invalid_table_translation_response_falls_back(
 
     result = read_items(output)[0]
     assert result["table_body"] == table_body
-    assert "translated_table_body" not in result
-    assert result["translation_status"] == "failed"
-    assert result["translation_error"]
+    assert result["translated_table_body"] == table_body
+    assert result["translation_status"] == "success"
+    assert result["table_translation_partial"] is True
+    assert result["table_translation_fallback_cell_count"] == 1
+    assert result["table_translation_fallbacks"][0]["error"]
+
+
+class CellBatchTranslator:
+    def __init__(self, responder):
+        self.responder = responder
+        self.requests = []
+        self.response_formats = []
+
+    def translate(self, text, *, response_format=None):
+        payload = json.loads(text)
+        self.requests.append(payload)
+        self.response_formats.append(response_format)
+        return self.responder(payload, len(self.requests))
+
+
+def cell_response(*items):
+    return json.dumps(
+        {
+            "cells": [
+                {
+                    "cell_id": cell_id,
+                    "translated_text": translated,
+                }
+                for cell_id, translated in items
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_table_retries_only_failed_cell_and_keeps_successful_formula_cell(
+    tmp_path,
+):
+    formula = r"${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
+    table_body = (
+        "<table><tr>"
+        f"<td>Density {formula}</td>"
+        "<td>Corrosion $x$ at $y$</td>"
+        "</tr></table>"
+    )
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+
+    def respond(payload, call_number):
+        cells = payload["cells"]
+        if call_number == 1:
+            return cell_response(
+                (cells[0]["cell_id"], "密度 ⟦M0⟧"),
+                (cells[1]["cell_id"], "腐蚀 ⟦M0⟧"),
+            )
+        assert [cell["cell_id"] for cell in cells] == ["cell-0002"]
+        return cell_response(
+            ("cell-0002", "腐蚀 ⟦M0⟧ 于 ⟦M1⟧")
+        )
+
+    translator = CellBatchTranslator(respond)
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=1,
+        concurrency=1,
+    )
+    item = read_items(output)[0]
+
+    assert len(translator.requests) == 2
+    assert formula in item["translated_table_body"]
+    assert "密度" in item["translated_table_body"]
+    assert "腐蚀 $x$ 于 $y$" in item["translated_table_body"]
+    assert item["translation_status"] == "success"
+    assert item["table_translation_partial"] is False
+    assert item["table_translation_success_cell_count"] == 2
+    assert item["table_translation_fallback_cell_count"] == 0
+    assert item["table_translation_fallbacks"] == []
+    assert stats.model_call_count == 2
+
+
+def test_final_failed_cell_falls_back_without_failing_the_table(tmp_path):
+    table_body = (
+        "<table><tr><td>Alpha $x$</td><td>Beta $y$</td></tr></table>"
+    )
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+
+    def respond(payload, call_number):
+        cells = payload["cells"]
+        if call_number == 1:
+            return cell_response(
+                (cells[0]["cell_id"], "甲 ⟦M0⟧"),
+                (cells[1]["cell_id"], "乙"),
+            )
+        assert [cell["cell_id"] for cell in cells] == ["cell-0002"]
+        return cell_response(("cell-0002", "仍然缺少公式"))
+
+    translator = CellBatchTranslator(respond)
+    translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=1,
+        concurrency=1,
+    )
+    item = read_items(output)[0]
+
+    assert "甲 $x$" in item["translated_table_body"]
+    assert "Beta $y$" in item["translated_table_body"]
+    assert item["translation_status"] == "success"
+    assert item["table_translation_partial"] is True
+    assert item["table_translation_success_cell_count"] == 1
+    assert item["table_translation_fallback_cell_count"] == 1
+    assert item["table_translation_fallbacks"][0]["cell_id"] == "cell-0002"
+    assert "缺失" in item["table_translation_fallbacks"][0]["error"]
+
+
+def test_resume_preserves_partial_table_metadata(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = "<table><tr><td>Alpha</td></tr></table>"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+    output.write_text(
+        json.dumps(
+            [
+                {
+                    "type": "table",
+                    "table_body": table_body,
+                    "translated_table_body": table_body,
+                    "translation_status": "success",
+                    "table_translation_partial": True,
+                    "table_translation_success_cell_count": 0,
+                    "table_translation_fallback_cell_count": 1,
+                    "table_translation_fallbacks": [
+                        {
+                            "cell_id": "cell-0001",
+                            "error": "公式占位符存在缺失 ID",
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    translator = CellBatchTranslator(
+        lambda payload, call_number: cell_response()
+    )
+
+    translate_content_list_file(
+        source,
+        output,
+        translator,
+        concurrency=1,
+    )
+    item = read_items(output)[0]
+
+    assert translator.requests == []
+    assert item["table_translation_partial"] is True
+    assert item["table_translation_fallback_cell_count"] == 1
+    assert item["table_translation_fallbacks"][0]["cell_id"] == "cell-0001"

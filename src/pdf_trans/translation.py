@@ -18,10 +18,29 @@ from pdf_trans.formula_protection import (
     FormulaProtectionError,
 )
 from pdf_trans.logging_utils import logged_stage
-from pdf_trans.table_translation import prepare_table_translation
+from pdf_trans.table_cell_protection import (
+    CellProtectionError,
+    restore_cell_segment,
+)
+from pdf_trans.table_translation import (
+    MAX_BATCH_FORMULAS,
+    MAX_BATCH_ITEMS,
+    MAX_BATCH_TOKENS,
+    CellFallback,
+    CellWorkItem,
+    TableTranslationError,
+    plan_cell_batches,
+    prepare_table_translation,
+)
 from pdf_trans.translation_client import DEFAULT_TRANSLATION_CONCURRENCY
 
 LOGGER = logging.getLogger(__name__)
+_TABLE_METADATA_FIELDS = (
+    "table_translation_partial",
+    "table_translation_success_cell_count",
+    "table_translation_fallback_cell_count",
+    "table_translation_fallbacks",
+)
 
 
 class TextTranslator(Protocol):
@@ -64,6 +83,10 @@ class TableTranslationOutcome:
     error: str | None
     model_call_count: int
     elapsed_seconds: float
+    partial: bool = False
+    success_cell_count: int = 0
+    fallback_cell_count: int = 0
+    fallbacks: tuple[CellFallback, ...] = ()
 
 
 CheckpointWriter = Callable[[Path, list[dict[str, Any]]], None]
@@ -133,8 +156,69 @@ def _prepare_new_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         elif item.get("type") == "table":
             item.pop("translated_table_body", None)
             item.pop("translation_error", None)
+            for field in _TABLE_METADATA_FIELDS:
+                item.pop(field, None)
             item["translation_status"] = "pending"
     return prepared
+
+
+def _clear_table_metadata(item: dict[str, Any]) -> None:
+    for field in _TABLE_METADATA_FIELDS:
+        item.pop(field, None)
+
+
+def _restore_table_metadata(
+    item: dict[str, Any],
+    old: dict[str, Any],
+    index: int,
+) -> None:
+    present = [field in old for field in _TABLE_METADATA_FIELDS]
+    if any(present) and not all(present):
+        raise TranslationContentError(
+            f"断点文件第 {index} 个 success 表格的单元格翻译元数据不完整"
+        )
+    if not any(present):
+        item["table_translation_partial"] = False
+        item["table_translation_success_cell_count"] = 0
+        item["table_translation_fallback_cell_count"] = 0
+        item["table_translation_fallbacks"] = []
+        return
+
+    partial = old["table_translation_partial"]
+    success_count = old["table_translation_success_cell_count"]
+    fallback_count = old["table_translation_fallback_cell_count"]
+    fallbacks = old["table_translation_fallbacks"]
+    valid_fallbacks = (
+        isinstance(fallbacks, list)
+        and len(fallbacks) == fallback_count
+        and all(
+            isinstance(value, dict)
+            and set(value) == {"cell_id", "error"}
+            and isinstance(value["cell_id"], str)
+            and bool(value["cell_id"])
+            and isinstance(value["error"], str)
+            and bool(value["error"])
+            for value in fallbacks
+        )
+    )
+    if (
+        not isinstance(partial, bool)
+        or type(success_count) is not int
+        or success_count < 0
+        or type(fallback_count) is not int
+        or fallback_count < 0
+        or partial != (fallback_count > 0)
+        or not valid_fallbacks
+        or len({value["cell_id"] for value in fallbacks})
+        != len(fallbacks)
+    ):
+        raise TranslationContentError(
+            f"断点文件第 {index} 个 success 表格的单元格翻译元数据无效"
+        )
+    item["table_translation_partial"] = partial
+    item["table_translation_success_cell_count"] = success_count
+    item["table_translation_fallback_cell_count"] = fallback_count
+    item["table_translation_fallbacks"] = copy.deepcopy(fallbacks)
 
 
 def _restore_table_state(
@@ -146,6 +230,7 @@ def _restore_table_state(
     if status is None:
         item.pop("translated_table_body", None)
         item.pop("translation_error", None)
+        _clear_table_metadata(item)
         item["translation_status"] = "pending"
         return
     if status == "success":
@@ -158,9 +243,11 @@ def _restore_table_state(
         item["translated_table_body"] = translated
         item["translation_status"] = "success"
         item.pop("translation_error", None)
+        _restore_table_metadata(item, old, index)
         return
     if status in {"pending", "failed"}:
         item.pop("translated_table_body", None)
+        _clear_table_metadata(item)
         item["translation_status"] = status
         if status == "failed":
             error = old.get("translation_error")
@@ -369,7 +456,7 @@ def _translate_table_one(
             started=started,
         )
 
-    if not prepared.nodes:
+    if not prepared.work_items:
         elapsed = time.perf_counter() - started
         LOGGER.info(
             "第 %d 张表无需翻译：success，耗时 %.2f 秒",
@@ -386,60 +473,152 @@ def _translate_table_one(
             elapsed_seconds=elapsed,
         )
 
-    request = prepared.build_request()
-    response_format = prepared.build_response_format()
-    total_attempts = max_retries + 1
-    for attempt in range(1, total_attempts + 1):
-        LOGGER.info(
-            "第 %d 张表开始批量翻译 %d 个节点：第 %d/%d 次调用",
-            table_number,
-            len(prepared.nodes),
-            attempt,
-            total_attempts,
+    pending = {
+        item.work_id: item for item in prepared.work_items
+    }
+    validated: dict[str, str] = {}
+    last_errors: dict[str, str] = {}
+    model_call_count = 0
+    total_rounds = max_retries + 1
+
+    for round_index in range(total_rounds):
+        if not pending:
+            break
+        final_retry_round = (
+            round_index > 0 and round_index == total_rounds - 1
         )
-        try:
-            response = translator.translate(
-                request,
-                response_format=response_format,
+        max_items = (
+            1
+            if final_retry_round
+            else max(1, MAX_BATCH_ITEMS // (2**round_index))
+        )
+        batches = plan_cell_batches(
+            tuple(pending.values()),
+            max_items=max_items,
+            max_tokens=MAX_BATCH_TOKENS,
+            max_formulas=MAX_BATCH_FORMULAS,
+        )
+        failed_this_round: dict[str, CellWorkItem] = {}
+        for batch_number, batch in enumerate(batches, 1):
+            model_call_count += 1
+            LOGGER.info(
+                "第 %d 张表开始单元格翻译：第 %d/%d 轮，第 %d/%d 批，"
+                "%d 个 work item",
+                table_number,
+                round_index + 1,
+                total_rounds,
+                batch_number,
+                len(batches),
+                len(batch.items),
             )
-            if not isinstance(response, str) or not response.strip():
-                raise ValueError("模型返回空表格翻译结果")
-            translated = prepared.apply_response(response)
-        except Exception as exc:
-            if attempt < total_attempts:
+            try:
+                response = translator.translate(
+                    batch.build_request(),
+                    response_format=batch.build_response_format(),
+                )
+                if not isinstance(response, str) or not response.strip():
+                    raise TableTranslationError(
+                        "模型返回空表格翻译结果"
+                    )
+                parsed = batch.parse_response(response)
+            except Exception as exc:
+                message = str(exc) or exc.__class__.__name__
+                for item in batch.items:
+                    failed_this_round[item.work_id] = item
+                    last_errors[item.work_id] = message
                 LOGGER.warning(
-                    "第 %d 张表第 %d 次调用失败：%s，将重试",
+                    "第 %d 张表第 %d 轮第 %d 批失败，%d 个 work item "
+                    "进入后续处理：%s",
                     table_number,
-                    attempt,
-                    exc,
+                    round_index + 1,
+                    batch_number,
+                    len(batch.items),
+                    message[:200],
                 )
                 continue
-            return _failed_table_outcome(
-                index=index,
-                table_number=table_number,
-                error=exc,
-                model_call_count=attempt,
-                started=started,
-            )
 
-        elapsed = time.perf_counter() - started
-        LOGGER.info(
-            "第 %d 张表翻译完成：success，耗时 %.2f 秒，%d 个节点",
-            table_number,
-            elapsed,
-            len(prepared.nodes),
-        )
-        return TableTranslationOutcome(
+            for warning in parsed.warnings:
+                LOGGER.warning(
+                    "第 %d 张表第 %d 轮第 %d 批响应警告：%s",
+                    table_number,
+                    round_index + 1,
+                    batch_number,
+                    warning[:200],
+                )
+            batch_items = {
+                item.work_id: item for item in batch.items
+            }
+            accepted_count = 0
+            for work_id, translated_text in parsed.translations.items():
+                item = batch_items[work_id]
+                try:
+                    restore_cell_segment(
+                        translated_text,
+                        prepared.segment_for(work_id),
+                    )
+                except CellProtectionError as exc:
+                    failed_this_round[work_id] = item
+                    last_errors[work_id] = str(exc)
+                else:
+                    validated[work_id] = translated_text
+                    last_errors.pop(work_id, None)
+                    accepted_count += 1
+            for work_id, error in parsed.errors.items():
+                failed_this_round[work_id] = batch_items[work_id]
+                last_errors[work_id] = error
+            LOGGER.info(
+                "第 %d 张表第 %d 轮第 %d 批完成：验收 %d，失败 %d",
+                table_number,
+                round_index + 1,
+                batch_number,
+                accepted_count,
+                len(batch.items) - accepted_count,
+            )
+        pending = failed_this_round
+
+    for work_id in pending:
+        last_errors.setdefault(work_id, "单元格翻译重试耗尽")
+    try:
+        rebuild = prepared.rebuild(validated, last_errors)
+    except Exception as exc:
+        return _failed_table_outcome(
             index=index,
             table_number=table_number,
-            status="success",
-            translated_table_body=translated,
-            error=None,
-            model_call_count=attempt,
-            elapsed_seconds=elapsed,
+            error=exc,
+            model_call_count=model_call_count,
+            started=started,
         )
 
-    raise AssertionError(f"第 {table_number} 张表未产生翻译结果")
+    elapsed = time.perf_counter() - started
+    for fallback in rebuild.fallbacks:
+        LOGGER.warning(
+            "第 %d 张表单元格 %s 回退 MinerU 原文：%s",
+            table_number,
+            fallback.cell_id,
+            fallback.error[:200],
+        )
+    LOGGER.info(
+        "第 %d 张表翻译完成：success，耗时 %.2f 秒，成功 %d 个单元格，"
+        "回退 %d 个单元格，模型调用 %d 次",
+        table_number,
+        elapsed,
+        rebuild.success_cell_count,
+        rebuild.fallback_cell_count,
+        model_call_count,
+    )
+    return TableTranslationOutcome(
+        index=index,
+        table_number=table_number,
+        status="success",
+        translated_table_body=rebuild.translated_html,
+        error=None,
+        model_call_count=model_call_count,
+        elapsed_seconds=elapsed,
+        partial=rebuild.fallback_cell_count > 0,
+        success_cell_count=rebuild.success_cell_count,
+        fallback_cell_count=rebuild.fallback_cell_count,
+        fallbacks=rebuild.fallbacks,
+    )
 
 
 def _apply_outcome(
@@ -464,8 +643,23 @@ def _apply_table_outcome(
         item["translated_table_body"] = outcome.translated_table_body
         item["translation_status"] = "success"
         item.pop("translation_error", None)
+        item["table_translation_partial"] = outcome.partial
+        item[
+            "table_translation_success_cell_count"
+        ] = outcome.success_cell_count
+        item[
+            "table_translation_fallback_cell_count"
+        ] = outcome.fallback_cell_count
+        item["table_translation_fallbacks"] = [
+            {
+                "cell_id": fallback.cell_id,
+                "error": fallback.error,
+            }
+            for fallback in outcome.fallbacks
+        ]
         return
     item.pop("translated_table_body", None)
+    _clear_table_metadata(item)
     item["translation_status"] = "failed"
     item["translation_error"] = outcome.error
 
