@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
 
 from pdf_trans.errors import TranslationContentError
+from pdf_trans.formula_protection import (
+    FormulaProtectionContext,
+    FormulaProtectionError,
+)
 from pdf_trans.logging_utils import logged_stage
 from pdf_trans.table_translation import prepare_table_translation
 from pdf_trans.translation_client import DEFAULT_TRANSLATION_CONCURRENCY
@@ -236,6 +240,28 @@ def _translate_one(
     max_retries: int,
 ) -> TranslationOutcome:
     started = time.perf_counter()
+    formula_context = FormulaProtectionContext()
+    try:
+        protected = formula_context.protect(text)
+    except FormulaProtectionError as exc:
+        elapsed = time.perf_counter() - started
+        error = f"公式保护准备失败：{exc}"
+        LOGGER.error(
+            "第 %d 段翻译完成：failed，耗时 %.2f 秒，错误：%s",
+            section_number,
+            elapsed,
+            error,
+        )
+        return TranslationOutcome(
+            index=index,
+            section_number=section_number,
+            status="failed",
+            translated_text=None,
+            error=error,
+            model_call_count=0,
+            elapsed_seconds=elapsed,
+        )
+
     last_error: Exception | None = None
     total_attempts = max_retries + 1
     for attempt in range(1, total_attempts + 1):
@@ -246,9 +272,10 @@ def _translate_one(
             total_attempts,
         )
         try:
-            translated = translator.translate(text)
+            translated = translator.translate(protected.model_text)
             if not isinstance(translated, str) or not translated.strip():
                 raise ValueError("模型返回空译文")
+            translated = formula_context.restore(translated, protected)
         except Exception as exc:
             last_error = exc
             if attempt < total_attempts:

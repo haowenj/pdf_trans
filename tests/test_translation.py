@@ -1,6 +1,7 @@
 import copy
 import json
 import logging
+import re
 import threading
 import time
 
@@ -13,6 +14,9 @@ from pdf_trans.translation import (
     translate_content_list_file,
     write_json_atomic,
 )
+
+
+FORMULA_TOKEN_RE = re.compile(r"⟪PDFTRANS_FORMULA:[^⟫]+⟫")
 
 
 class FakeTranslator:
@@ -40,11 +44,11 @@ def test_translate_file_processes_every_text_object_and_preserves_non_text(tmp_p
     items = [
         {"type": "text", "text": "Alpha [38]", "page_idx": 0},
         {"type": "image", "img_path": "images/a.png"},
-        {"type": "text", "text": "Beta $x^2$", "custom": {"a": 1}},
+        {"type": "text", "text": "Beta value", "custom": {"a": 1}},
         {"type": "text", "text": "Gamma C-1"},
     ]
     source.write_text(json.dumps(items), encoding="utf-8")
-    translator = FakeTranslator(["甲 [38]", "乙 $x^2$", "丙 C-1"])
+    translator = FakeTranslator(["甲 [38]", "乙值", "丙 C-1"])
 
     stats = translate_content_list_file(
         source,
@@ -53,13 +57,102 @@ def test_translate_file_processes_every_text_object_and_preserves_non_text(tmp_p
         concurrency=1,
     )
 
-    assert translator.received == ["Alpha [38]", "Beta $x^2$", "Gamma C-1"]
+    assert translator.received == ["Alpha [38]", "Beta value", "Gamma C-1"]
     translated = read_items(output)
     assert translated[0]["text"] == "Alpha [38]"
     assert translated[0]["translated_text"] == "甲 [38]"
     assert translated[0]["translation_status"] == "success"
     assert translated[1] == items[1]
     assert stats == TranslationStats(3, 3, 0, 3, 0, 0)
+
+
+class PlaceholderProbeTranslator:
+    def __init__(self, *, corrupt_attempts=0):
+        self.corrupt_attempts = corrupt_attempts
+        self.received = []
+
+    def translate(self, text, *, response_format=None):
+        self.received.append(text)
+        assert response_format is None
+        if len(self.received) <= self.corrupt_attempts:
+            return FORMULA_TOKEN_RE.sub("", text, count=1)
+        return text.replace("Temperature", "温度").replace(
+            "and density", "和密度"
+        )
+
+
+def test_text_translation_hides_multiple_formulas_and_restores_exactly(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    formula_one = r"${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
+    formula_two = "$$\n\\rho = \\frac{m}{V}\n$$"
+    source_text = f"Temperature {formula_one} and density {formula_two}"
+    source.write_text(
+        json.dumps([{"type": "text", "text": source_text}]),
+        encoding="utf-8",
+    )
+    translator = PlaceholderProbeTranslator()
+
+    translate_content_list_file(source, output, translator, concurrency=1)
+
+    assert formula_one not in translator.received[0]
+    assert formula_two not in translator.received[0]
+    result = read_items(output)[0]
+    assert result["translated_text"] == (
+        f"温度 {formula_one} 和密度 {formula_two}"
+    )
+    assert result["translation_status"] == "success"
+
+
+def test_placeholder_validation_failure_retries_then_succeeds(tmp_path, caplog):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "text", "text": "Temperature $x$"}]),
+        encoding="utf-8",
+    )
+    translator = PlaceholderProbeTranslator(corrupt_attempts=1)
+    caplog.set_level(logging.INFO, logger="pdf_trans.translation")
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=1,
+        concurrency=1,
+    )
+
+    assert len(translator.received) == 2
+    assert translator.received[0] == translator.received[1]
+    assert stats.model_call_count == 2
+    assert read_items(output)[0]["translation_status"] == "success"
+    assert "公式占位符" in "\n".join(
+        record.getMessage() for record in caplog.records
+    )
+
+
+def test_placeholder_validation_exhaustion_never_writes_success(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source_text = "Temperature $x^{2}$"
+    source.write_text(
+        json.dumps([{"type": "text", "text": source_text}]),
+        encoding="utf-8",
+    )
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        PlaceholderProbeTranslator(corrupt_attempts=2),
+        max_retries=1,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["translated_text"] is None
+    assert result["translation_status"] == "failed"
+    assert "公式占位符" in result["translation_error"]
+    assert stats == TranslationStats(1, 2, 0, 0, 1, 0)
 
 
 def test_retries_failures_and_continues_with_model_call_count(tmp_path):
@@ -487,6 +580,61 @@ def test_translate_file_batches_table_nodes_by_id_and_preserves_source_html(tmp_
     )
     assert result["translation_status"] == "success"
     assert stats == TranslationStats(0, 1, 0, 0, 0, 0)
+
+
+class CorruptingTableFormulaTranslator:
+    def __init__(self):
+        self.received = []
+
+    def translate(self, text, *, response_format=None):
+        self.received.append(text)
+        assert response_format is not None
+        payload = json.loads(text)
+        return json.dumps(
+            {
+                "translations": [
+                    {
+                        "id": item["id"],
+                        "text": FORMULA_TOKEN_RE.sub(
+                            "", item["text"], count=1
+                        ),
+                    }
+                    for item in payload["items"]
+                ]
+            }
+        )
+
+
+def test_table_formula_validation_exhaustion_keeps_original_table(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = (
+        "<table><tr><td>"
+        r"Temperature ${15}^{\circ}\mathrm{C},\mathrm{kg}/\mathrm{m}^{3}$"
+        "</td></tr></table>"
+    )
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": table_body}]),
+        encoding="utf-8",
+    )
+    translator = CorruptingTableFormulaTranslator()
+
+    translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=1,
+        concurrency=1,
+    )
+
+    assert len(translator.received) == 2
+    result = read_items(output)[0]
+    assert result["table_body"] == table_body
+    assert "translated_table_body" not in result
+    assert result["translation_status"] == "failed"
+    assert "表格节点 table-text-0001 公式校验失败" in result[
+        "translation_error"
+    ]
 
 
 def test_numeric_only_table_makes_no_model_call_and_finishes_successfully(tmp_path):
