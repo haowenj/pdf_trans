@@ -65,6 +65,7 @@ class PreparedTableTranslation:
                     "Translate every item text from English to Simplified "
                     "Chinese. Return JSON only with the same IDs and shape "
                     '{"translations":[{"id":"...","text":"..."}]}.'
+                    " Keep every formula placeholder exactly unchanged."
                 ),
                 "items": [
                     {

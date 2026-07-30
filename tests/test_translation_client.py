@@ -199,6 +199,7 @@ def test_translate_sends_compatible_request_and_returns_only_content():
         "$...$",
         "C-1",
         "SS1",
+        "占位符",
         "只返回译文",
     ):
         assert required in TRANSLATION_SYSTEM_PROMPT
