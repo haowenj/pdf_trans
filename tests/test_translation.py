@@ -7,6 +7,7 @@ import time
 import pytest
 
 from pdf_trans.errors import TranslationContentError
+from pdf_trans.table_translation import prepare_table_translation
 from pdf_trans.translation import (
     TranslationStats,
     translate_content_list_file,
@@ -18,9 +19,11 @@ class FakeTranslator:
     def __init__(self, results):
         self.results = iter(results)
         self.received = []
+        self.response_formats = []
 
-    def translate(self, text):
+    def translate(self, text, *, response_format=None):
         self.received.append(text)
+        self.response_formats.append(response_format)
         result = next(self.results)
         if isinstance(result, BaseException):
             raise result
@@ -417,9 +420,11 @@ class JsonTableTranslator:
     def __init__(self, translations):
         self.translations = translations
         self.received = []
+        self.response_formats = []
 
-    def translate(self, text):
+    def translate(self, text, *, response_format=None):
         self.received.append(text)
+        self.response_formats.append(response_format)
         payload = json.loads(text)
         return json.dumps(
             {
@@ -470,6 +475,9 @@ def test_translate_file_batches_table_nodes_by_id_and_preserves_source_html(tmp_
         "Mass Fraction",
         "Ethanol",
     ]
+    assert translator.response_formats == [
+        prepare_table_translation(table_body).build_response_format()
+    ]
     result = read_items(output)[0]
     assert result["table_body"] == table_body
     assert result["translated_table_body"] == (
@@ -507,10 +515,12 @@ class SelectiveTranslator:
     def __init__(self):
         self.received = []
 
-    def translate(self, text):
+    def translate(self, text, *, response_format=None):
         self.received.append(text)
         if text == "Paragraph":
+            assert response_format is None
             return "正文"
+        assert response_format is not None
         raise RuntimeError("table service unavailable")
 
 

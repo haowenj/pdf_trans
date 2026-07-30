@@ -21,7 +21,12 @@ LOGGER = logging.getLogger(__name__)
 
 
 class TextTranslator(Protocol):
-    def translate(self, text: str) -> str:
+    def translate(
+        self,
+        text: str,
+        *,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
         ...
 
 
@@ -355,6 +360,7 @@ def _translate_table_one(
         )
 
     request = prepared.build_request()
+    response_format = prepared.build_response_format()
     total_attempts = max_retries + 1
     for attempt in range(1, total_attempts + 1):
         LOGGER.info(
@@ -365,7 +371,10 @@ def _translate_table_one(
             total_attempts,
         )
         try:
-            response = translator.translate(request)
+            response = translator.translate(
+                request,
+                response_format=response_format,
+            )
             if not isinstance(response, str) or not response.strip():
                 raise ValueError("模型返回空表格翻译结果")
             translated = prepared.apply_response(response)
