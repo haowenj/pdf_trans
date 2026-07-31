@@ -3,7 +3,13 @@ from copy import deepcopy
 import pytest
 
 from pdf_trans.errors import FormulaAuditError
-from pdf_trans.formula_scanner import scan_content_list
+from pdf_trans.formula_scanner import (
+    rebuild_raw_formula,
+    replace_equation_formula,
+    replace_formula_spans,
+    replace_table_formula_spans,
+    scan_content_list,
+)
 
 
 def test_scans_equations_and_all_frontend_text_delimiters_without_mutation():
@@ -178,3 +184,85 @@ def test_rejects_malformed_table_html_with_field_path(table_body):
         scan_content_list(
             [{"type": "table", "table_body": table_body}]
         )
+
+
+def test_rebuilds_formula_without_changing_delimiters_or_outer_space():
+    candidates = scan_content_list(
+        [
+            {
+                "type": "equation",
+                "text": "  $$\n\\complement _ {4}\n$$  ",
+            },
+            {
+                "type": "text",
+                "text": r"before \(\frac {m 3}{h}\) after",
+            },
+        ]
+    )
+
+    assert rebuild_raw_formula(
+        candidates[0],
+        "\n\\mathrm{C}_{4}\n",
+    ) == "  $$\n\\mathrm{C}_{4}\n$$  "
+    assert rebuild_raw_formula(
+        candidates[1],
+        r"\frac{\mathrm{m}^{3}}{\mathrm{h}}",
+    ) == r"\(\frac{\mathrm{m}^{3}}{\mathrm{h}}\)"
+
+
+def test_replaces_only_complete_delimited_formula_spans():
+    replacements = {
+        (r"$x \neq y$", False): r"$x = y$",
+    }
+    source = r"literal x \neq y; formula $x \neq y$"
+
+    assert replace_formula_spans(source, replacements) == (
+        r"literal x \neq y; formula $x = y$"
+    )
+
+
+def test_table_replacement_ignores_attributes_and_hidden_nodes():
+    raw = r"$\frac {m 3}{h}$"
+    normalized = r"$\frac{\mathrm{m}^{3}}{\mathrm{h}}$"
+    html = (
+        f'<table data-formula="{raw}"><tr><td>{raw}</td>'
+        f"<td><script>{raw}</script></td></tr></table>"
+    )
+
+    assert replace_table_formula_spans(
+        html,
+        {(raw, False): normalized},
+    ) == (
+        f'<table data-formula="{raw}"><tr><td>{normalized}</td>'
+        f"<td><script>{raw}</script></td></tr></table>"
+    )
+
+
+def test_table_replacement_preserves_multiline_offsets():
+    raw = "$x$"
+    html = (
+        "<table>\n"
+        "  <tr>\n"
+        f"    <td>first {raw}</td>\n"
+        f"    <td>second {raw}</td>\n"
+        "  </tr>\n"
+        "</table>"
+    )
+
+    assert replace_table_formula_spans(
+        html,
+        {(raw, False): "$y$"},
+    ) == html.replace(raw, "$y$")
+
+
+def test_equation_replacement_requires_exact_raw_and_display_mode():
+    source = "$$x$$"
+
+    assert replace_equation_formula(
+        source,
+        {(source, False): "$$y$$"},
+    ) == source
+    assert replace_equation_formula(
+        source,
+        {(source, True): "$$y$$"},
+    ) == "$$y$$"

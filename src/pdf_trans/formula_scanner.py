@@ -3,9 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from html.parser import HTMLParser
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from pdf_trans.errors import FormulaAuditError
 
@@ -51,6 +51,8 @@ class FormulaCandidate:
     formula_index: int
     raw_formula: str
     katex_formula: str
+    katex_start: int
+    katex_end: int
     is_block: bool
     content_hash: str
 
@@ -60,6 +62,10 @@ class _FormulaSpan:
     raw_formula: str
     katex_formula: str
     is_block: bool
+    start: int
+    end: int
+    katex_start: int
+    katex_end: int
 
 
 @dataclass(frozen=True)
@@ -135,6 +141,10 @@ def _formula_spans(source: str) -> tuple[_FormulaSpan, ...]:
                         position + len(opening) : end
                     ],
                     is_block=is_block,
+                    start=position,
+                    end=raw_end,
+                    katex_start=position + len(opening),
+                    katex_end=end,
                 )
             )
             position = raw_end
@@ -147,6 +157,8 @@ def _formula_spans(source: str) -> tuple[_FormulaSpan, ...]:
 
 def _equation_formula(source: str) -> _FormulaSpan:
     stripped = source.strip()
+    stripped_start = len(source) - len(source.lstrip())
+    stripped_end = stripped_start + len(stripped)
     for opening, closing in (("$$", "$$"), ("\\[", "\\]")):
         if (
             stripped.startswith(opening)
@@ -159,8 +171,20 @@ def _equation_formula(source: str) -> _FormulaSpan:
                     len(opening) : len(stripped) - len(closing)
                 ],
                 is_block=True,
+                start=0,
+                end=len(source),
+                katex_start=stripped_start + len(opening),
+                katex_end=stripped_end - len(closing),
             )
-    return _FormulaSpan(source, source, True)
+    return _FormulaSpan(
+        raw_formula=source,
+        katex_formula=source,
+        is_block=True,
+        start=0,
+        end=len(source),
+        katex_start=0,
+        katex_end=len(source),
+    )
 
 
 def _positive_span(
@@ -189,10 +213,14 @@ def _positive_span(
 
 
 class _TableFormulaParser(HTMLParser):
-    def __init__(self, field_path: str) -> None:
+    def __init__(self, source: str, field_path: str) -> None:
         super().__init__(convert_charrefs=False)
         self.field_path = field_path
         self.formulas: list[_TableFormula] = []
+        self._line_starts = [0]
+        self._line_starts.extend(
+            match.end() for match in re.finditer(r"\n", source)
+        )
         self._stack: list[str] = []
         self._table_depth = 0
         self._saw_table = False
@@ -291,14 +319,23 @@ class _TableFormulaParser(HTMLParser):
             tag in _HIDDEN_TAGS for tag in self._stack
         ):
             return
+        line, column = self.getpos()
+        data_start = self._line_starts[line - 1] + column
         for span in _formula_spans(data):
+            absolute_span = replace(
+                span,
+                start=data_start + span.start,
+                end=data_start + span.end,
+                katex_start=data_start + span.katex_start,
+                katex_end=data_start + span.katex_end,
+            )
             self.formulas.append(
                 _TableFormula(
                     row_idx=cell.row_idx,
                     col_idx=cell.col_idx,
                     cell_tag=cell.tag,
                     formula_index=cell.formula_count,
-                    span=span,
+                    span=absolute_span,
                 )
             )
             cell.formula_count += 1
@@ -320,7 +357,7 @@ def _table_formulas(
     source: str,
     field_path: str,
 ) -> tuple[_TableFormula, ...]:
-    parser = _TableFormulaParser(field_path)
+    parser = _TableFormulaParser(source, field_path)
     try:
         parser.feed(source)
         parser.close()
@@ -379,8 +416,76 @@ def _candidate(
         formula_index=formula_index,
         raw_formula=span.raw_formula,
         katex_formula=span.katex_formula,
+        katex_start=span.katex_start - span.start,
+        katex_end=span.katex_end - span.start,
         is_block=span.is_block,
         content_hash=content_hash,
+    )
+
+
+def rebuild_raw_formula(
+    candidate: FormulaCandidate,
+    normalized_katex: str,
+) -> str:
+    return (
+        candidate.raw_formula[: candidate.katex_start]
+        + normalized_katex
+        + candidate.raw_formula[candidate.katex_end :]
+    )
+
+
+FormulaReplacement = Mapping[tuple[str, bool], str]
+
+
+def _replace_spans(
+    source: str,
+    spans: tuple[_FormulaSpan, ...],
+    replacements: FormulaReplacement,
+) -> str:
+    result = source
+    for span in reversed(spans):
+        replacement = replacements.get(
+            (span.raw_formula, span.is_block)
+        )
+        if replacement is not None:
+            result = (
+                result[: span.start]
+                + replacement
+                + result[span.end :]
+            )
+    return result
+
+
+def replace_formula_spans(
+    source: str,
+    replacements: FormulaReplacement,
+) -> str:
+    return _replace_spans(
+        source,
+        _formula_spans(source),
+        replacements,
+    )
+
+
+def replace_equation_formula(
+    source: str,
+    replacements: FormulaReplacement,
+) -> str:
+    span = _equation_formula(source)
+    return replacements.get((span.raw_formula, True), source)
+
+
+def replace_table_formula_spans(
+    source: str,
+    replacements: FormulaReplacement,
+    *,
+    field_path: str = "/render/table_body",
+) -> str:
+    formulas = _table_formulas(source, field_path)
+    return _replace_spans(
+        source,
+        tuple(value.span for value in formulas),
+        replacements,
     )
 
 
