@@ -1,3 +1,8 @@
+from datetime import datetime
+
+from pdf_trans.web.repository import TaskView
+
+
 def test_dashboard_renders_confirmed_layout(
     web_client, repository
 ) -> None:
@@ -57,6 +62,36 @@ def test_dashboard_assets_define_responsive_drawer_and_status_styles(
     assert "consoleOutput.replaceChildren()" in script
     assert "log.id <= lastLogId" in script
     assert "/logs/download" in script
+    assert "task.created_at_display" in script
+    assert "new Date(task.created_at).toLocaleString()" not in script
+
+
+def test_dashboard_displays_task_creation_time_as_beijing_time(
+    web_client,
+    repository,
+    monkeypatch,
+) -> None:
+    created_at = datetime(2026, 7, 31, 0, 54, 28)
+    task = TaskView(
+        id="a",
+        original_filename="a.pdf",
+        status="queued",
+        attempt_count=0,
+        source_pdf_path="tasks/a/upload/source.pdf",
+        normalized_path=None,
+        markdown_path=None,
+        error_message=None,
+        created_at=created_at,
+        updated_at=created_at,
+        started_at=None,
+        finished_at=None,
+    )
+    monkeypatch.setattr(repository, "list_tasks", lambda: [task])
+
+    response = web_client.get("/")
+
+    assert "2026-07-31 08:54:28 · 第 0 次执行" in response.text
+    assert "2026-07-31T00:54:28" not in response.text
 
 
 def test_dashboard_shows_delete_only_for_terminal_tasks(

@@ -48,7 +48,7 @@ function renderTasks(tasks) {
     name.textContent = task.original_filename;
     const detail = document.createElement('small');
     detail.textContent =
-      `${new Date(task.created_at).toLocaleString()} · 第 ${task.attempt_count} 次执行`;
+      `${task.created_at_display} · 第 ${task.attempt_count} 次执行`;
     const taskId = document.createElement('small');
     taskId.className = 'task-id';
     const shortId = document.createElement('code');

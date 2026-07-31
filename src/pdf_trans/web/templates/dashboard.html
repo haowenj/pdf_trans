@@ -33,7 +33,7 @@
             data-filename="{{ task.original_filename }}">
           <div>
             <strong>{{ task.original_filename }}</strong>
-            <small>{{ task.created_at.isoformat() }} · 第 {{ task.attempt_count }} 次执行</small>
+            <small>{{ task.created_at|beijing_time }} · 第 {{ task.attempt_count }} 次执行</small>
             <small class="task-id">
               <code title="{{ task.id }}">任务 UUID：{{ task.id[:8] }}</code>
               <button type="button" data-action="copy-id"
