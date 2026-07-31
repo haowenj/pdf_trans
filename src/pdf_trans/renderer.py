@@ -5,6 +5,13 @@ from pathlib import Path
 from typing import Any
 
 from pdf_trans.errors import ContentListError
+from pdf_trans.formula_audit import FormulaAuditReport
+from pdf_trans.formula_scanner import (
+    FormulaReplacement,
+    replace_equation_formula,
+    replace_formula_spans,
+    replace_table_formula_spans,
+)
 
 
 def _is_non_blank_string(value: Any) -> bool:
@@ -17,7 +24,10 @@ def _string_list(value: Any) -> list[str]:
     return [item for item in value if _is_non_blank_string(item)]
 
 
-def _render_item(item: Any) -> list[str]:
+def _render_item(
+    item: Any,
+    replacements: FormulaReplacement,
+) -> list[str]:
     if not isinstance(item, dict):
         return []
 
@@ -32,6 +42,8 @@ def _render_item(item: Any) -> list[str]:
             text = translated_text
         if not _is_non_blank_string(text):
             return []
+        if replacements:
+            text = replace_formula_spans(text, replacements)
         text_level = item.get("text_level")
         if type(text_level) is int and text_level in {1, 2}:
             return [f"{'#' * text_level} {text}"]
@@ -60,27 +72,50 @@ def _render_item(item: Any) -> list[str]:
         ):
             table_body = translated_table_body
         if _is_non_blank_string(table_body):
+            if replacements:
+                table_body = replace_table_formula_spans(
+                    table_body,
+                    replacements,
+                )
             parts.append(table_body)
         parts.extend(_string_list(item.get("table_footnote")))
         return parts
 
     if item_type == "equation":
         text = item.get("text")
-        return [text] if _is_non_blank_string(text) else []
+        if not _is_non_blank_string(text):
+            return []
+        if replacements:
+            text = replace_equation_formula(text, replacements)
+        return [text]
 
     return []
 
 
-def render_items(items: list[Any]) -> str:
+def render_items(
+    items: list[Any],
+    *,
+    formula_audit: FormulaAuditReport | None = None,
+) -> str:
+    replacements = (
+        {}
+        if formula_audit is None
+        else formula_audit.accepted_replacements
+    )
     parts: list[str] = []
     for item in items:
-        parts.extend(_render_item(item))
+        parts.extend(_render_item(item, replacements))
     if not parts:
         return ""
     return "\n\n".join(parts) + "\n"
 
 
-def render_content_list_file(source: Path, output: Path) -> None:
+def render_content_list_file(
+    source: Path,
+    output: Path,
+    *,
+    formula_audit: FormulaAuditReport | None = None,
+) -> None:
     try:
         with source.open("r", encoding="utf-8") as handle:
             items = json.load(handle)
@@ -90,7 +125,10 @@ def render_content_list_file(source: Path, output: Path) -> None:
     if not isinstance(items, list):
         raise ContentListError("content list 的 JSON 顶层必须是数组")
 
-    rendered = render_items(items)
+    rendered = render_items(
+        items,
+        formula_audit=formula_audit,
+    )
     try:
         output.write_text(rendered, encoding="utf-8")
     except OSError as exc:

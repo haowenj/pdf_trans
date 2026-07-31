@@ -1,5 +1,6 @@
 import copy
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -218,3 +219,93 @@ def test_render_items_falls_back_when_successful_table_translation_is_blank():
     assert render_items([item]) == (
         "<table><tr><td>Alpha</td></tr></table>\n"
     )
+
+
+def test_render_items_applies_only_accepted_formula_replacements():
+    report = SimpleNamespace(
+        accepted_replacements={
+            (
+                r"$\complement _ {4}$",
+                False,
+            ): r"$\mathrm{C}_{4}$",
+            (
+                "$$F I C 0 0 1 2$$",
+                True,
+            ): r"$$\mathrm{FIC0012}$$",
+        }
+    )
+    items = [
+        {
+            "type": "text",
+            "text": (
+                r"raw $\complement _ {4}$ "
+                r"and $\frac {m 3}{h}$"
+            ),
+        },
+        {
+            "type": "equation",
+            "text": "$$F I C 0 0 1 2$$",
+        },
+    ]
+
+    assert render_items(items, formula_audit=report) == (
+        r"raw $\mathrm{C}_{4}$ and $\frac {m 3}{h}$"
+        "\n\n"
+        r"$$\mathrm{FIC0012}$$"
+        "\n"
+    )
+
+
+def test_render_uses_selected_translated_fields_and_safe_table_spans():
+    raw = r"$\frac {m 3}{h}$"
+    normalized = r"$\frac{\mathrm{m}^{3}}{\mathrm{h}}$"
+    report = SimpleNamespace(
+        accepted_replacements={(raw, False): normalized}
+    )
+    items = [
+        {
+            "type": "text",
+            "text": f"原文 {raw}",
+            "translated_text": f"译文 {raw}",
+            "translation_status": "success",
+        },
+        {
+            "type": "table",
+            "table_body": (
+                f"<table><tr><td>{raw}</td></tr></table>"
+            ),
+            "translated_table_body": (
+                f'<table data-x="{raw}"><tr><td>{raw}</td></tr>'
+                "</table>"
+            ),
+            "translation_status": "success",
+        },
+    ]
+
+    rendered = render_items(items, formula_audit=report)
+
+    assert f"译文 {normalized}" in rendered
+    assert f'data-x="{raw}"' in rendered
+    assert f"<td>{normalized}</td>" in rendered
+
+
+def test_render_content_list_file_accepts_formula_audit(tmp_path):
+    source = tmp_path / "translated_content_list.json"
+    output = tmp_path / "rendered.md"
+    raw = r"$\complement _ {4}$"
+    normalized = r"$\mathrm{C}_{4}$"
+    source.write_text(
+        json.dumps([{"type": "text", "text": raw}]),
+        encoding="utf-8",
+    )
+    report = SimpleNamespace(
+        accepted_replacements={(raw, False): normalized}
+    )
+
+    render_content_list_file(
+        source,
+        output,
+        formula_audit=report,
+    )
+
+    assert output.read_text(encoding="utf-8") == normalized + "\n"
