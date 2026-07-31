@@ -127,6 +127,7 @@ python3 -m pdf_trans.web
 TRANSLATION_BASE_URL=https://api.example.com/v1
 TRANSLATION_API_KEY=replace-with-api-key
 TRANSLATION_MODEL=paper-translation-model
+TRANSLATION_ENABLE_THINKING=false
 ```
 
 然后构建并启动：
@@ -179,6 +180,7 @@ export TRANSLATION_MODEL="paper-translation-model"
 export TRANSLATION_TIMEOUT_SECONDS="120"
 export TRANSLATION_MAX_RETRIES="1"
 export TRANSLATION_CONCURRENCY="5"
+export TRANSLATION_ENABLE_THINKING="false"
 ```
 
 Web 变量：
@@ -200,6 +202,9 @@ export PDF_TRANS_WEB_PORT="8000"
 - `TRANSLATION_TIMEOUT_SECONDS` 默认 120，必须为正整数；
 - `TRANSLATION_MAX_RETRIES` 默认 1，表示失败后的额外重试次数；
 - `TRANSLATION_CONCURRENCY` 默认 5，控制单个翻译任务内部的并发请求数；
+- `TRANSLATION_ENABLE_THINKING` 为可选的 GPUStack/vLLM Qwen3.6 思考开关：
+  `true` 开启，`false` 关闭；未配置时不发送 `chat_template_kwargs`，用于兼容
+  不支持该参数的模型；
 - `PDF_TRANS_WEB_DATA_DIR` 默认项目根目录下的 `data/web`；
 - `PDF_TRANS_DATABASE_URL` 默认指向 `data/web/pdf_trans.db`；
 - `PDF_TRANS_MAX_UPLOAD_MIB` 默认 `200`；
@@ -209,6 +214,9 @@ export PDF_TRANS_WEB_PORT="8000"
   等远端推理服务；
 - `PDF_TRANS_WEB_HOST` 默认 `127.0.0.1`；
 - `PDF_TRANS_WEB_PORT` 默认 `8000`。
+
+项目仍通过普通 HTTP 请求调用 `/chat/completions`。显式配置思考开关时，请求体
+顶层增加 `chat_template_kwargs.enable_thinking`；未配置时请求体保持原样。
 
 如果使用 `hybrid-http-client`，MinerU 服务端仍需配置模型来源和 GPUStack API Key，
 例如：
