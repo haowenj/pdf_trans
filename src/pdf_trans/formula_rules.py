@@ -84,11 +84,17 @@ def _split_letters(value: str) -> str:
     return r"\s+".join(re.escape(character) for character in value)
 
 
-def _fixed_field_pattern(body: str) -> re.Pattern[str]:
+def _text_field_pattern(body: str) -> re.Pattern[str]:
     return re.compile(
-        r"(?<![A-Za-z])(?:"
-        r"\\text\s*\{\s*(?:" + body + r")\s*\}|"
-        r"(?:" + body + r"))(?![A-Za-z])"
+        r"(?<![A-Za-z])\\text\s*\{\s*(?:"
+        + body
+        + r")\s*\}(?![A-Za-z])"
+    )
+
+
+def _bare_field_pattern(body: str) -> re.Pattern[str]:
+    return re.compile(
+        r"(?<![A-Za-z])(?:" + body + r")(?![A-Za-z])"
     )
 
 
@@ -104,21 +110,39 @@ _NORMALIZE_EQUATION_LABEL_RE = re.compile(
     + _split_letters("Equation")
     + r"\s+(?P<number>\d+)\s*\}(?![A-Za-z])"
 )
-_NORMALIZE_FIXED_FIELD_PATTERNS = (
+_NORMALIZE_TEXT_FIELD_PATTERNS = (
     (
-        _fixed_field_pattern(_METER_MAX_BODY),
+        _text_field_pattern(_METER_MAX_BODY),
         r"\mathrm{MeterMax}",
     ),
     (
-        _fixed_field_pattern(_split_letters("SetPoint")),
+        _text_field_pattern(_split_letters("SetPoint")),
         r"\mathrm{SetPoint}",
     ),
     (
-        _fixed_field_pattern(_split_letters("Output")),
+        _text_field_pattern(_split_letters("Output")),
         r"\mathrm{Output}",
     ),
     (
-        _fixed_field_pattern(_split_letters("Equation")),
+        _text_field_pattern(_split_letters("Equation")),
+        r"\mathrm{Equation}",
+    ),
+)
+_NORMALIZE_BARE_FIELD_PATTERNS = (
+    (
+        _bare_field_pattern(_METER_MAX_BODY),
+        r"\mathrm{MeterMax}",
+    ),
+    (
+        _bare_field_pattern(_split_letters("SetPoint")),
+        r"\mathrm{SetPoint}",
+    ),
+    (
+        _bare_field_pattern(_split_letters("Output")),
+        r"\mathrm{Output}",
+    ),
+    (
+        _bare_field_pattern(_split_letters("Equation")),
         r"\mathrm{Equation}",
     ),
 )
@@ -130,6 +154,68 @@ _NORMALIZE_UNIT_RE = re.compile(
     r"\\frac(?![A-Za-z])\s*\{\s*m\s+3\s*\}"
     r"\s*\{\s*h\s*\}"
 )
+
+
+def _apply_patterns(
+    source: str,
+    patterns: tuple[tuple[re.Pattern[str], str], ...],
+) -> tuple[str, int]:
+    result = source
+    total = 0
+    for pattern, replacement in patterns:
+        result, count = pattern.subn(
+            lambda _match, value=replacement: value,
+            result,
+        )
+        total += count
+    return result, total
+
+
+def _text_group_ranges(
+    formula: str,
+) -> tuple[tuple[int, int], ...]:
+    ranges: list[tuple[int, int]] = []
+    for match in _TEXT_START_RE.finditer(formula):
+        opening = match.end() - 1
+        depth = 1
+        position = opening + 1
+        while position < len(formula):
+            character = formula[position]
+            if character == "{" and not _is_escaped(formula, position):
+                depth += 1
+            elif (
+                character == "}"
+                and not _is_escaped(formula, position)
+            ):
+                depth -= 1
+                if depth == 0:
+                    ranges.append((match.start(), position + 1))
+                    break
+            position += 1
+    return tuple(ranges)
+
+
+def _replace_bare_fields_outside_text(
+    formula: str,
+) -> tuple[str, int]:
+    parts: list[str] = []
+    total = 0
+    position = 0
+    for start, end in _text_group_ranges(formula):
+        replaced, count = _apply_patterns(
+            formula[position:start],
+            _NORMALIZE_BARE_FIELD_PATTERNS,
+        )
+        parts.extend((replaced, formula[start:end]))
+        total += count
+        position = end
+    replaced, count = _apply_patterns(
+        formula[position:],
+        _NORMALIZE_BARE_FIELD_PATTERNS,
+    )
+    parts.append(replaced)
+    total += count
+    return "".join(parts), total
 
 
 class DeterministicFormulaNormalizer:
@@ -169,12 +255,15 @@ class DeterministicFormulaNormalizer:
             ),
             normalized,
         )
-        for pattern, replacement in _NORMALIZE_FIXED_FIELD_PATTERNS:
-            normalized, count = pattern.subn(
-                lambda _match, value=replacement: value,
-                normalized,
-            )
-            field_count += count
+        normalized, count = _apply_patterns(
+            normalized,
+            _NORMALIZE_TEXT_FIELD_PATTERNS,
+        )
+        field_count += count
+        normalized, count = _replace_bare_fields_outside_text(
+            normalized
+        )
+        field_count += count
         if field_count:
             rules.append("fixed_process_control_field")
 
@@ -214,25 +303,10 @@ def _is_escaped(source: str, position: int) -> bool:
 
 
 def _text_groups(formula: str) -> tuple[str, ...]:
-    groups: list[str] = []
-    for match in _TEXT_START_RE.finditer(formula):
-        opening = match.end() - 1
-        depth = 1
-        position = opening + 1
-        while position < len(formula):
-            character = formula[position]
-            if character == "{" and not _is_escaped(formula, position):
-                depth += 1
-            elif (
-                character == "}"
-                and not _is_escaped(formula, position)
-            ):
-                depth -= 1
-                if depth == 0:
-                    groups.append(formula[match.start() : position + 1])
-                    break
-            position += 1
-    return tuple(groups)
+    return tuple(
+        formula[start:end]
+        for start, end in _text_group_ranges(formula)
+    )
 
 
 def _matches(

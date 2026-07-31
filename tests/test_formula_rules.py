@@ -206,6 +206,23 @@ def test_normalizer_does_not_change_outside_whitelist(formula):
     assert result.changed is False
 
 
+@pytest.mark.parametrize(
+    "formula",
+    [
+        r"\text {L e v e l C o n t r o l l e r O u t p u t}",
+        r"\text {S e t P o i n t o f F I C}",
+        r"\text {R a n g e o f F I C}",
+    ],
+)
+def test_normalizer_does_not_rewrite_fields_inside_longer_text_groups(
+    formula,
+):
+    result = DeterministicFormulaNormalizer().normalize(formula)
+
+    assert result.normalized_formula == formula
+    assert result.normalization_rules == ()
+
+
 def test_normalizer_is_idempotent():
     normalizer = DeterministicFormulaNormalizer()
     first = normalizer.normalize(
