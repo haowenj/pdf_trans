@@ -276,6 +276,7 @@ def test_translate_sends_compatible_request_and_returns_only_content():
     assert "reasoning" not in seen["payload"]
     assert "reasoning_effort" not in seen["payload"]
     assert "thinking" not in seen["payload"]
+    assert "chat_template_kwargs" not in seen["payload"]
     for required in (
         "[38]",
         "[39–41]",
@@ -287,6 +288,34 @@ def test_translate_sends_compatible_request_and_returns_only_content():
         "只返回译文",
     ):
         assert required in TRANSLATION_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_translate_sends_configured_vllm_thinking_switch(enabled):
+    seen = {}
+
+    def handler(request):
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "译文"}}]},
+        )
+
+    translator = OpenAICompatibleTranslator(
+        base_url="http://translate.example/v1",
+        api_key="secret",
+        model="qwen3.6-plus",
+        enable_thinking=enabled,
+        http_client=httpx.Client(
+            transport=httpx.MockTransport(handler)
+        ),
+    )
+
+    assert translator.translate("Source") == "译文"
+    assert seen["payload"]["chat_template_kwargs"] == {
+        "enable_thinking": enabled,
+    }
+    assert "enable_thinking" not in seen["payload"]
 
 
 def test_translate_includes_explicit_response_format():
@@ -315,6 +344,7 @@ def test_translate_includes_explicit_response_format():
         base_url="http://translate.example/v1",
         api_key="secret",
         model="paper-model",
+        enable_thinking=False,
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
@@ -325,7 +355,15 @@ def test_translate_includes_explicit_response_format():
 
     assert result == '{"translations":[]}'
     assert seen["payload"]["response_format"] == response_format
-    assert set(seen["payload"]) == {"model", "messages", "response_format"}
+    assert seen["payload"]["chat_template_kwargs"] == {
+        "enable_thinking": False,
+    }
+    assert set(seen["payload"]) == {
+        "model",
+        "messages",
+        "response_format",
+        "chat_template_kwargs",
+    }
 
 
 @pytest.mark.parametrize(

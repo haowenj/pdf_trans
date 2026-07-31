@@ -193,6 +193,10 @@ class OpenAICompatibleTranslator:
                 {"role": "user", "content": text},
             ],
         }
+        if self.enable_thinking is not None:
+            payload["chat_template_kwargs"] = {
+                "enable_thinking": self.enable_thinking,
+            }
         if response_format is not None:
             payload["response_format"] = response_format
 
