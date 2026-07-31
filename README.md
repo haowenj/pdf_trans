@@ -226,7 +226,7 @@ MinerU 结果解压到数据目录，并按以下顺序生成处理结果：
 
 ```text
 content_list.json
-  -> formula_audit.json（只读公式审计报告）
+  -> formula_audit.json（纯规则公式审计与修复决定）
   -> cleaned_content_list.json
   -> cross_page_candidates.json（诊断报告）
   -> normalized_content_list.json
@@ -250,8 +250,8 @@ data/runs/cli-<uuid>/
 ### 公式审计
 
 完整 Web 工作流在 MinerU 解压并定位原始 `*_content_list.json` 后、清洗和翻译前生成
-`formula_audit.json`。审计只读取 MinerU 原始内容，不修改 `text`、`table_body` 或任何
-原始公式。
+`formula_audit.json`。审计只读取 MinerU 原始内容，不修改 `text`、`table_body` 或
+任何原始公式；公式修复只使用确定性白名单规则，不调用视觉模型或文本模型。
 
 审计范围包括 `type=equation` 的独立公式、所有 `text` 字段中的行内和块级公式，以及
 `table_body` 的每个 `td`/`th` 单元格。全部公式通过一个 Node 进程批量交给前端同版本、
@@ -259,12 +259,18 @@ data/runs/cli-<uuid>/
 
 报告为每条公式记录稳定 `formula_id`、`page_idx`、`bbox`、来源字段路径、表格行列、
 原始公式和内容哈希。语法状态区分 `valid` 与 `invalid_syntax`；`suspicious` 是独立
-标记，因此语法有效的公式仍可能被列为可疑。第一版只标记已知 MinerU 异常模式，
-`normalized_formula`、`normalization_rule` 和 `confidence` 保留为空，不做自动修复。
+标记，因此语法有效的公式仍可能被列为可疑。
 
-公式语法失败或内容可疑不会阻断翻译。审计基础设施无法运行、原始文件无法读取或报告
-无法可靠写入时，任务会在翻译前失败。页面继续任务时会复用有效审计报告；旧任务存在
-规范化断点但缺少报告时，会先从原始 content list 补做审计。
+schema v2 会对命中白名单的公式生成 `normalized_formula`，按实际应用顺序记录
+`normalization_rules`，并使用同一个 KaTeX 校验器严格复检最终候选。校验成功时
+`normalization_status` 为 `accepted`，最终 Markdown 使用规范化公式；校验失败时为
+`rejected`，最终继续使用 `raw_formula`。报告同时输出扫描、命中、accepted 和
+rejected 数量以及逐公式修复明细。
+
+单条公式语法失败、内容可疑或修复候选 rejected 不会阻断翻译，也不会使整段、整表或
+整份文档失败。KaTeX/Node 基础设施无法运行、原始文件无法读取或报告无法可靠写入时，
+任务仍会在翻译前失败。页面继续任务时会复用有效 schema v2；有效 schema v1 会从
+原始 MinerU content list 原子重建为 v2，损坏的 v2 不会被静默覆盖。
 
 `--translate-only` 同样会生成 `data/runs/cli-<uuid>/` 下的 `task.json` 和
 `task.log`，但翻译文件和 Markdown 仍写在指定的
@@ -328,8 +334,12 @@ Web 任务会包含全部 `attempts/`；旧 Web 任务如果还没有 `task.log`
   译文为空或旧格式对象时回退到原始 `text`；
 - `ref_text`：原始参考文献段落；
 - `image` 和 `chart`：相对图片路径、图注和脚注；
-- `table`：图注、原始 HTML 表格和脚注；
-- `equation`：MinerU 提供的原始 LaTeX 文本。
+- `table`：图注、翻译成功时的 HTML 表格（否则回退原始表格）和脚注；
+- `equation`：没有 accepted 修复时输出 MinerU 原始 LaTeX；存在 accepted 修复时，
+  只在审计确认的完整公式跨度内输出 `normalized_formula`。
+
+正文和表格中的 accepted 修复同样只按完整公式分隔符及 HTML 可见文本节点应用，不会
+全局替换普通文字、HTML 属性、`\complement`、`\neq` 或 `\neqq`。
 
 Web reader 会把 `rendered.md` 渲染为安全 HTML，保留 `<table>`、`rowspan`、
 `colspan` 等结构，补充表格样式、图片自适应和打印样式，并用本地 KaTeX 渲染正文及
