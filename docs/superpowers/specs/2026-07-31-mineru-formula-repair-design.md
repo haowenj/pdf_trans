@@ -177,6 +177,10 @@ E q u a t i o n
 \mathrm{Equation}
 ```
 
+实际控制公式中的 `\text {E q u a t i o n 1}` 也属于固定 Equation 标签。此时只允许
+`Equation` 后面出现十进制编号，并保留该编号，规范为
+`\mathrm{Equation\,1}`；不能吞掉编号，也不能借此匹配其他自由文本。
+
 匹配 `\text` 时必须确认花括号平衡。该规则不通用替换 `\max`，也不规范其他带空格
 的普通文字。
 
@@ -239,9 +243,12 @@ accepted 修复不能通过全局字符串替换写入结果。
 可见 `td`、`th` 文本节点中的完整公式跨度内；HTML 属性、隐藏元素和非公式文字均
 保持不变。
 
-审计报告读取器拒绝同一个精确身份出现冲突的 accepted 修复。翻译阶段的公式保护机制
-应当恢复完全一致的原公式；如果选中的翻译字段中不存在被审计的 raw 公式，渲染器
-保持该内容不变，不做模糊匹配。
+同一个精确 `(raw_formula, is_block)` 身份如果出现多次，其
+`normalized_formula` 和 `normalization_status` 必须一致。审计报告读取器拒绝
+accepted/rejected 状态冲突或 normalized 内容冲突，避免渲染器把某个 accepted
+决定错误应用到同身份的 rejected 公式。翻译阶段的公式保护机制应当恢复完全一致的
+原公式；如果选中的翻译字段中不存在被审计的 raw 公式，渲染器保持该内容不变，不做
+模糊匹配。
 
 ## KaTeX 复检
 
@@ -317,6 +324,11 @@ v1 的单数 `normalization_rule` 和 `confidence` 字段删除。所有修复�
 rejected 规范化记录。这样，即使某条高置信度公式原本能通过 KaTeX 且旧可疑规则
 没有覆盖，它的修复明细仍不会丢失。
 
+`issue_formula_count` 等于上述 `issues` 集合的公式数。
+`problem_page_indices` 同样从该集合计算，因此包含语法无效、可疑、accepted 或
+rejected 公式所在的页面。`invalid_syntax_page_indices` 和
+`suspicious_page_indices` 仍分别只表示原公式语法失败和原公式可疑的页面。
+
 ## 统计与明细日志
 
 每次公式修复审计完成后输出一条汇总日志，包含：
@@ -376,6 +388,7 @@ translated 断点不覆盖；accepted 修复只在重新生成 `rendered.md` 时
   `\mathsf { C } _ {7}\neqq / \mathsf { C } _ {8}\neq`；
 - 三种错误 MeterMax 和拆字母 MeterMax；
 - `SetPoint`、`Output`、`Equation`；
+- 带十进制编号且保留编号的 `\text {E q u a t i o n 1}`；
 - 带编号的 `F I C` 和 `H I C`；
 - 无编号 `F I C` 保持不变；
 - `\frac{m 3}{h}` 及空格变体；
