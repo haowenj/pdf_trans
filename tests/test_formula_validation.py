@@ -42,6 +42,36 @@ def test_validates_complete_batch_with_vendored_katex():
     assert results[2].validation_error is None
 
 
+def test_production_katex_accepts_normalized_whitelist_examples():
+    results = KaTeXFormulaValidator().validate_batch(
+        (
+            ValidationInput(
+                "complement",
+                r"\mathrm{C}_{4}^{=}",
+                False,
+            ),
+            ValidationInput(
+                "alkene",
+                r"\mathrm{C}_{7}^{=} / \mathrm{C}_{8}^{=}",
+                False,
+            ),
+            ValidationInput(
+                "control",
+                r"\mathrm{FIC0012}_{\mathrm{SetPoint}}"
+                r"\frac{\mathrm{m}^{3}}{\mathrm{h}}",
+                True,
+            ),
+        )
+    )
+
+    assert [value.syntax_status for value in results] == [
+        "valid",
+        "valid",
+        "valid",
+    ]
+    assert all(value.validation_error is None for value in results)
+
+
 def test_configuration_matches_frontend_source():
     root = Path(__file__).resolve().parents[1]
     reader = (
