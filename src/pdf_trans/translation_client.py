@@ -65,6 +65,22 @@ def _parse_positive_integer(name: str, value: str) -> int:
     return parsed
 
 
+def _parse_optional_boolean(
+    name: str,
+    value: str,
+) -> bool | None:
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise TranslationConfigError(
+        f"{name} 只能是 true、false 或不配置"
+    )
+
+
 class OpenAICompatibleTranslator:
     def __init__(
         self,
@@ -75,6 +91,7 @@ class OpenAICompatibleTranslator:
         timeout_seconds: float = DEFAULT_TRANSLATION_TIMEOUT_SECONDS,
         max_retries: int = DEFAULT_TRANSLATION_MAX_RETRIES,
         concurrency: int = DEFAULT_TRANSLATION_CONCURRENCY,
+        enable_thinking: bool | None = None,
         http_client: httpx.Client | None = None,
     ) -> None:
         if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -89,11 +106,20 @@ class OpenAICompatibleTranslator:
             raise TranslationConfigError(
                 "TRANSLATION_CONCURRENCY 必须是大于 0 的整数"
             )
+        if (
+            enable_thinking is not None
+            and type(enable_thinking) is not bool
+        ):
+            raise TranslationConfigError(
+                "TRANSLATION_ENABLE_THINKING "
+                "只能是 true、false 或不配置"
+            )
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.concurrency = concurrency
+        self.enable_thinking = enable_thinking
         self._api_key = api_key
         self._owns_client = http_client is None
         self._http = http_client or httpx.Client(timeout=timeout_seconds)
@@ -130,6 +156,10 @@ class OpenAICompatibleTranslator:
                 str(DEFAULT_TRANSLATION_CONCURRENCY),
             ),
         )
+        enable_thinking = _parse_optional_boolean(
+            "TRANSLATION_ENABLE_THINKING",
+            os.environ.get("TRANSLATION_ENABLE_THINKING", ""),
+        )
         return cls(
             base_url=values["TRANSLATION_BASE_URL"],
             api_key=values["TRANSLATION_API_KEY"],
@@ -137,6 +167,7 @@ class OpenAICompatibleTranslator:
             timeout_seconds=timeout,
             max_retries=max_retries,
             concurrency=concurrency,
+            enable_thinking=enable_thinking,
         )
 
     def __enter__(self) -> "OpenAICompatibleTranslator":

@@ -13,6 +13,11 @@ from pdf_trans.translation_client import (
 )
 
 
+@pytest.fixture(autouse=True)
+def clear_translation_thinking_environment(monkeypatch):
+    monkeypatch.delenv("TRANSLATION_ENABLE_THINKING", raising=False)
+
+
 def test_from_env_reads_required_translation_configuration(monkeypatch):
     monkeypatch.setenv("TRANSLATION_BASE_URL", "http://translate.example/v1/")
     monkeypatch.setenv("TRANSLATION_API_KEY", "secret")
@@ -42,6 +47,85 @@ def test_from_env_uses_new_timeout_and_concurrency_defaults(monkeypatch):
     assert translator.max_retries == DEFAULT_TRANSLATION_MAX_RETRIES
     assert translator.concurrency == DEFAULT_TRANSLATION_CONCURRENCY == 5
     translator.close()
+
+
+def test_from_env_leaves_thinking_unconfigured_by_default(monkeypatch):
+    monkeypatch.setenv(
+        "TRANSLATION_BASE_URL",
+        "http://translate.example/v1",
+    )
+    monkeypatch.setenv("TRANSLATION_API_KEY", "secret")
+    monkeypatch.setenv("TRANSLATION_MODEL", "paper-model")
+    monkeypatch.delenv("TRANSLATION_ENABLE_THINKING", raising=False)
+
+    translator = OpenAICompatibleTranslator.from_env()
+
+    assert translator.enable_thinking is None
+    translator.close()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", None),
+        ("   ", None),
+        ("true", True),
+        ("TRUE", True),
+        (" false ", False),
+        ("FaLsE", False),
+    ],
+)
+def test_from_env_parses_optional_thinking_configuration(
+    monkeypatch,
+    value,
+    expected,
+):
+    monkeypatch.setenv(
+        "TRANSLATION_BASE_URL",
+        "http://translate.example/v1",
+    )
+    monkeypatch.setenv("TRANSLATION_API_KEY", "secret")
+    monkeypatch.setenv("TRANSLATION_MODEL", "paper-model")
+    monkeypatch.setenv("TRANSLATION_ENABLE_THINKING", value)
+
+    translator = OpenAICompatibleTranslator.from_env()
+
+    assert translator.enable_thinking is expected
+    translator.close()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["1", "0", "yes", "no", "enabled", "tru"],
+)
+def test_from_env_rejects_invalid_thinking_configuration(
+    monkeypatch,
+    value,
+):
+    monkeypatch.setenv("TRANSLATION_BASE_URL", "configured")
+    monkeypatch.setenv("TRANSLATION_API_KEY", "configured")
+    monkeypatch.setenv("TRANSLATION_MODEL", "configured")
+    monkeypatch.setenv("TRANSLATION_ENABLE_THINKING", value)
+
+    with pytest.raises(
+        TranslationConfigError,
+        match="TRANSLATION_ENABLE_THINKING",
+    ):
+        OpenAICompatibleTranslator.from_env()
+
+
+@pytest.mark.parametrize("value", [0, 1, "false", object()])
+def test_constructor_rejects_non_boolean_thinking_configuration(value):
+    with pytest.raises(
+        TranslationConfigError,
+        match="TRANSLATION_ENABLE_THINKING",
+    ):
+        OpenAICompatibleTranslator(
+            base_url="http://translate.example/v1",
+            api_key="secret",
+            model="paper-model",
+            enable_thinking=value,
+        )
 
 
 def test_from_env_reads_concurrency(monkeypatch):
