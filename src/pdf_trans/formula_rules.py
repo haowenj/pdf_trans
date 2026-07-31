@@ -175,7 +175,10 @@ def _text_group_ranges(
     formula: str,
 ) -> tuple[tuple[int, int], ...]:
     ranges: list[tuple[int, int]] = []
+    covered_until = 0
     for match in _TEXT_START_RE.finditer(formula):
+        if match.start() < covered_until:
+            continue
         opening = match.end() - 1
         depth = 1
         position = opening + 1
@@ -190,6 +193,7 @@ def _text_group_ranges(
                 depth -= 1
                 if depth == 0:
                     ranges.append((match.start(), position + 1))
+                    covered_until = position + 1
                     break
             position += 1
     return tuple(ranges)

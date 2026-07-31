@@ -223,6 +223,19 @@ def test_normalizer_does_not_rewrite_fields_inside_longer_text_groups(
     assert result.normalization_rules == ()
 
 
+def test_normalizer_does_not_duplicate_nested_text_ranges():
+    formula = r"\text{prefix \text{inner}} O u t p u t"
+
+    result = DeterministicFormulaNormalizer().normalize(formula)
+
+    assert result.normalized_formula == (
+        r"\text{prefix \text{inner}} \mathrm{Output}"
+    )
+    assert result.normalization_rules == (
+        "fixed_process_control_field",
+    )
+
+
 def test_normalizer_is_idempotent():
     normalizer = DeterministicFormulaNormalizer()
     first = normalizer.normalize(
