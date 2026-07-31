@@ -14,23 +14,17 @@ class SuspicionMatch:
 
 @dataclass(frozen=True)
 class NormalizationResult:
-    normalized_formula: str | None
-    normalization_rule: str | None
-    confidence: float | None
+    normalized_formula: str
+    normalization_rules: tuple[str, ...]
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.normalization_rules)
 
 
 class FormulaNormalizer(Protocol):
-    def normalize(self, raw_formula: str) -> NormalizationResult:
+    def normalize(self, formula: str) -> NormalizationResult:
         ...
-
-
-class NoOpFormulaNormalizer:
-    def normalize(self, raw_formula: str) -> NormalizationResult:
-        return NormalizationResult(
-            normalized_formula=None,
-            normalization_rule=None,
-            confidence=None,
-        )
 
 
 _NEQQ_RE = re.compile(r"\\neqq(?![A-Za-z])")
@@ -60,6 +54,154 @@ _MESSAGES = {
         "疑似立方米每小时单位被误识别为 \\frac{m 3}{h}"
     ),
 }
+
+_NORMALIZE_COMPLEMENT_SUBSCRIPT_RE = re.compile(
+    r"\\complement(?![A-Za-z])\s*_\s*"
+    r"\{\s*(?P<number>\d+)\s*\}"
+)
+_NORMALIZE_DEGREE_COMPLEMENT_RE = re.compile(
+    r"(?P<degree>\^\s*\{\s*\\circ(?![A-Za-z])\s*\})"
+    r"\s*\\complement(?![A-Za-z])"
+)
+
+
+def _carbon_with_subscript(name: str) -> str:
+    return (
+        rf"(?:\\mathsf\s*\{{\s*C\s*\}}|C)\s*_\s*"
+        rf"\{{\s*(?P<{name}>\d+)\s*\}}"
+    )
+
+
+_NORMALIZE_ALKENE_PAIR_RE = re.compile(
+    _carbon_with_subscript("left")
+    + r"\s*\\neqq(?![A-Za-z])\s*/\s*"
+    + _carbon_with_subscript("right")
+    + r"\s*\\neq(?:q)?(?![A-Za-z])"
+)
+
+
+def _split_letters(value: str) -> str:
+    return r"\s+".join(re.escape(character) for character in value)
+
+
+def _fixed_field_pattern(body: str) -> re.Pattern[str]:
+    return re.compile(
+        r"(?<![A-Za-z])(?:"
+        r"\\text\s*\{\s*(?:" + body + r")\s*\}|"
+        r"(?:" + body + r"))(?![A-Za-z])"
+    )
+
+
+_METER_MAX_BODY = (
+    _split_letters("MeterMa")
+    + r"\s+(?:x|\\max(?![A-Za-z])|"
+    r"\^\s*\{\s*(?:\\max(?![A-Za-z])|"
+    + _split_letters("max")
+    + r")\s*\})"
+)
+_NORMALIZE_EQUATION_LABEL_RE = re.compile(
+    r"(?<![A-Za-z])\\text\s*\{\s*"
+    + _split_letters("Equation")
+    + r"\s+(?P<number>\d+)\s*\}(?![A-Za-z])"
+)
+_NORMALIZE_FIXED_FIELD_PATTERNS = (
+    (
+        _fixed_field_pattern(_METER_MAX_BODY),
+        r"\mathrm{MeterMax}",
+    ),
+    (
+        _fixed_field_pattern(_split_letters("SetPoint")),
+        r"\mathrm{SetPoint}",
+    ),
+    (
+        _fixed_field_pattern(_split_letters("Output")),
+        r"\mathrm{Output}",
+    ),
+    (
+        _fixed_field_pattern(_split_letters("Equation")),
+        r"\mathrm{Equation}",
+    ),
+)
+_NORMALIZE_INSTRUMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?P<tag>[FH])\s+I\s+C\s+"
+    r"(?P<digits>\d(?:[ \t\r\n]*\d)*)(?![A-Za-z0-9])"
+)
+_NORMALIZE_UNIT_RE = re.compile(
+    r"\\frac(?![A-Za-z])\s*\{\s*m\s+3\s*\}"
+    r"\s*\{\s*h\s*\}"
+)
+
+
+class DeterministicFormulaNormalizer:
+    def normalize(self, formula: str) -> NormalizationResult:
+        normalized = formula
+        rules: list[str] = []
+
+        normalized, count = _NORMALIZE_COMPLEMENT_SUBSCRIPT_RE.subn(
+            lambda match: rf"\mathrm{{C}}_{{{match['number']}}}",
+            normalized,
+        )
+        if count:
+            rules.append("mineru_complement_subscript_c")
+
+        normalized, count = _NORMALIZE_DEGREE_COMPLEMENT_RE.subn(
+            lambda match: match["degree"] + r" \mathrm{C}",
+            normalized,
+        )
+        if count:
+            rules.append("mineru_degree_complement_c")
+
+        normalized, count = _NORMALIZE_ALKENE_PAIR_RE.subn(
+            lambda match: (
+                rf"\mathrm{{C}}_{{{match['left']}}}^{{=}} / "
+                rf"\mathrm{{C}}_{{{match['right']}}}^{{=}}"
+            ),
+            normalized,
+        )
+        if count:
+            rules.append("alkene_carbon_count_equality_pair")
+
+        normalized, field_count = _NORMALIZE_EQUATION_LABEL_RE.subn(
+            lambda match: (
+                r"\mathrm{Equation\,"
+                + match["number"]
+                + "}"
+            ),
+            normalized,
+        )
+        for pattern, replacement in _NORMALIZE_FIXED_FIELD_PATTERNS:
+            normalized, count = pattern.subn(
+                lambda _match, value=replacement: value,
+                normalized,
+            )
+            field_count += count
+        if field_count:
+            rules.append("fixed_process_control_field")
+
+        normalized, count = _NORMALIZE_INSTRUMENT_RE.subn(
+            lambda match: (
+                r"\mathrm{"
+                + match["tag"]
+                + "IC"
+                + re.sub(r"\s+", "", match["digits"])
+                + "}"
+            ),
+            normalized,
+        )
+        if count:
+            rules.append("numbered_instrument_tag")
+
+        normalized, count = _NORMALIZE_UNIT_RE.subn(
+            lambda _match: r"\frac{\mathrm{m}^{3}}{\mathrm{h}}",
+            normalized,
+        )
+        if count:
+            rules.append("cubic_metre_per_hour")
+
+        return NormalizationResult(
+            normalized_formula=normalized,
+            normalization_rules=tuple(rules),
+        )
 
 
 def _is_escaped(source: str, position: int) -> bool:
