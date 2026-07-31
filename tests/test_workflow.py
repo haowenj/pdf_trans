@@ -13,6 +13,8 @@ from pdf_trans.errors import (
     NormalizationError,
     WorkflowError,
 )
+from pdf_trans.formula_audit import audit_content_list_file
+from pdf_trans.formula_validation import ValidationResult
 from pdf_trans.translation import TranslationStats
 from pdf_trans.workflow import process_pdf, process_translation_file
 
@@ -34,6 +36,14 @@ class FakeTranslator:
     def translate(self, text):
         self.received.append(text)
         return f"译文：{text}"
+
+
+class AcceptingFormulaValidator:
+    def validate_batch(self, formulas):
+        return tuple(
+            ValidationResult(value.formula_id, "valid", None)
+            for value in formulas
+        )
 
 
 def make_result_zip(items) -> bytes:
@@ -131,6 +141,54 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     )
 
 
+def test_process_pdf_renders_accepted_normalized_formula(
+    tmp_path,
+    monkeypatch,
+):
+    from pdf_trans import workflow
+
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    raw_formula = r"$$\complement _ {4}^{=}$$"
+    client = FakeMinerUClient(
+        make_result_zip(
+            [
+                {
+                    "type": "equation",
+                    "page_idx": 7,
+                    "text": raw_formula,
+                }
+            ]
+        )
+    )
+
+    def audit_with_accepting_validator(source, output):
+        return audit_content_list_file(
+            source,
+            output,
+            validator=AcceptingFormulaValidator(),
+        )
+
+    monkeypatch.setattr(
+        workflow,
+        "audit_content_list_file",
+        audit_with_accepting_validator,
+    )
+
+    result = process_pdf(
+        pdf,
+        data_dir=tmp_path / "data",
+        client=client,
+        translator=FakeTranslator(),
+    )
+
+    assert result.markdown_path.read_text(encoding="utf-8") == (
+        r"$$\mathrm{C}_{4}^{=}$$" + "\n"
+    )
+    source = json.loads(result.source_path.read_text(encoding="utf-8"))
+    assert source[0]["text"] == raw_formula
+
+
 def test_process_pdf_preserves_raw_archive_when_extraction_fails(tmp_path):
     pdf = tmp_path / "paper.pdf"
     pdf.write_bytes(b"%PDF")
@@ -170,6 +228,7 @@ def test_process_pdf_audits_original_before_cleaning_and_translation(
         events.append(("audit", source, output))
         output.write_text("{}", encoding="utf-8")
         return SimpleNamespace(
+            accepted_replacements={},
             stats=SimpleNamespace(
                 total_formulas=1,
                 invalid_syntax_count=1,

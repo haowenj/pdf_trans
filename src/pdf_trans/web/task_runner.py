@@ -8,6 +8,7 @@ from typing import Callable
 from pdf_trans.errors import FormulaAuditError
 from pdf_trans.formula_audit import (
     FormulaAuditReport,
+    LegacyFormulaAuditError,
     audit_content_list_file,
     log_formula_audit_summary,
     read_formula_audit_file,
@@ -36,7 +37,7 @@ _GENERATED_CONTENT_LIST_NAMES = {
 class WorkflowServices:
     process_pdf: Callable[..., WorkflowResult]
     process_translation_file: Callable[..., TranslationFileResult]
-    render_content_list_file: Callable[[Path, Path], None]
+    render_content_list_file: Callable[..., None]
     audit_content_list_file: Callable[
         [Path, Path],
         FormulaAuditReport,
@@ -98,11 +99,13 @@ class TaskRunner:
 
         if checkpoints:
             normalized = checkpoints[0]
-            self._ensure_formula_audit(normalized)
+            audit_report = self._ensure_formula_audit(normalized)
             result = self.services.process_translation_file(normalized)
             markdown = normalized.with_name("rendered.md")
             self.services.render_content_list_file(
-                result.translated_path, markdown
+                result.translated_path,
+                markdown,
+                formula_audit=audit_report,
             )
             summary = (
                 f"断点续传完成：成功 {result.stats.success_count} 段，"
@@ -135,14 +138,29 @@ class TaskRunner:
             summary,
         )
 
-    def _ensure_formula_audit(self, normalized: Path) -> None:
+    def _ensure_formula_audit(
+        self,
+        normalized: Path,
+    ) -> FormulaAuditReport:
         audit_path = normalized.with_name("formula_audit.json")
         if audit_path.is_file():
-            report = self.services.read_formula_audit_file(audit_path)
+            try:
+                report = self.services.read_formula_audit_file(
+                    audit_path
+                )
+            except LegacyFormulaAuditError:
+                source = _original_content_list(normalized)
+                return self.services.audit_content_list_file(
+                    source,
+                    audit_path,
+                )
             log_formula_audit_summary(report, LOGGER)
-            return
+            return report
         source = _original_content_list(normalized)
-        self.services.audit_content_list_file(source, audit_path)
+        return self.services.audit_content_list_file(
+            source,
+            audit_path,
+        )
 
     def _artifacts(
         self,

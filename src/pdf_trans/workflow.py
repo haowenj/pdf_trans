@@ -364,6 +364,7 @@ def _process_pdf_stages(
         render_content_list_file(
             translation_result.translated_path,
             markdown_path,
+            formula_audit=audit_report,
         )
         stage.set_result(f"输出文件 {markdown_path.resolve()}")
 

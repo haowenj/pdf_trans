@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from pdf_trans.errors import FormulaAuditError
+from pdf_trans.formula_audit import LegacyFormulaAuditError
 from pdf_trans.web.config import WebSettings
 from pdf_trans.web.repository import TaskView
 from pdf_trans.web.task_runner import (
@@ -58,11 +59,17 @@ def make_checkpoint(tmp_path):
 
 def fake_audit_report():
     return SimpleNamespace(
+        accepted_replacements={},
         stats=SimpleNamespace(
             total_formulas=0,
             invalid_syntax_count=0,
             suspicious_count=0,
+            scanned_formula_count=0,
+            matched_formula_count=0,
+            normalization_accepted_count=0,
+            normalization_rejected_count=0,
         ),
+        payload={"formulas": []},
         invalid_syntax_page_indices=(),
         suspicious_page_indices=(),
     )
@@ -143,8 +150,8 @@ def test_runner_resumes_translation_and_renders_markdown(tmp_path):
             stats=SimpleNamespace(success_count=3, failed_count=0),
         )
 
-    def render(source, output):
-        calls.append(("render", source, output))
+    def render(source, output, *, formula_audit=None):
+        calls.append(("render", source, output, formula_audit))
         output.write_text("# resumed", encoding="utf-8")
 
     runner = TaskRunner(
@@ -155,24 +162,27 @@ def test_runner_resumes_translation_and_renders_markdown(tmp_path):
 
     assert calls[0] == ("translate", normalized)
     assert calls[1][2] == normalized.with_name("rendered.md")
+    assert calls[1][3] is not None
     assert result.resumed is True
 
 
 def test_runner_reuses_valid_formula_audit_before_resume(tmp_path):
     normalized = make_checkpoint(tmp_path)
     audit = normalized.with_name("formula_audit.json")
-    audit.write_text('{"schema_version": 1}', encoding="utf-8")
+    audit.write_text('{"schema_version": 2}', encoding="utf-8")
     calls = []
+    report = fake_audit_report()
 
     def read_report(path):
         calls.append(("read_audit", path))
-        return fake_audit_report()
+        return report
 
     def translate(path):
         calls.append(("translate", path))
         return fake_translation_result(path)
 
-    def render(source, output):
+    def render(source, output, *, formula_audit=None):
+        calls.append(("render", source, output, formula_audit))
         output.write_text("# resumed", encoding="utf-8")
 
     def fail_audit(source, output):
@@ -191,9 +201,15 @@ def test_runner_reuses_valid_formula_audit_before_resume(tmp_path):
 
     runner.run(task_view(attempt_count=2))
 
-    assert calls[:2] == [
+    assert calls == [
         ("read_audit", audit),
         ("translate", normalized),
+        (
+            "render",
+            normalized.with_name("translated_content_list.json"),
+            normalized.with_name("rendered.md"),
+            report,
+        ),
     ]
 
 
@@ -203,17 +219,21 @@ def test_runner_backfills_legacy_formula_audit_before_resume(tmp_path):
     source.write_text("[]", encoding="utf-8")
     audit = normalized.with_name("formula_audit.json")
     calls = []
+    report = fake_audit_report()
 
     def create_audit(source_path, output_path):
         calls.append(("audit", source_path, output_path))
         output_path.write_text("{}", encoding="utf-8")
-        return fake_audit_report()
+        return report
 
     def translate(path):
         calls.append(("translate", path))
         return fake_translation_result(path)
 
-    def render(source_path, output_path):
+    def render(source_path, output_path, *, formula_audit=None):
+        calls.append(
+            ("render", source_path, output_path, formula_audit)
+        )
         output_path.write_text("# resumed", encoding="utf-8")
 
     runner = TaskRunner(
@@ -235,7 +255,87 @@ def test_runner_backfills_legacy_formula_audit_before_resume(tmp_path):
         ("audit", source, audit),
         ("translate", normalized),
     ]
+    assert calls[2][0] == "render"
+    assert calls[2][3] is report
     assert audit.exists()
+
+
+def test_runner_rebuilds_valid_v1_formula_audit_before_resume(
+    tmp_path,
+):
+    normalized = make_checkpoint(tmp_path)
+    source = normalized.with_name("source_content_list.json")
+    source.write_text("[]", encoding="utf-8")
+    audit = normalized.with_name("formula_audit.json")
+    audit.write_text('{"schema_version": 1}', encoding="utf-8")
+    report = fake_audit_report()
+    calls = []
+
+    def read_report(path):
+        calls.append(("read_v1", path))
+        raise LegacyFormulaAuditError("schema v1")
+
+    def create_audit(source_path, output_path):
+        calls.append(("rebuild_v2", source_path, output_path))
+        return report
+
+    def translate(path):
+        calls.append(("translate", path))
+        return fake_translation_result(path)
+
+    def render(source_path, output_path, *, formula_audit=None):
+        calls.append(("render", formula_audit))
+        output_path.write_text("# resumed", encoding="utf-8")
+
+    runner = TaskRunner(
+        settings(tmp_path),
+        WorkflowServices(
+            lambda *args, **kwargs: None,
+            translate,
+            render,
+            create_audit,
+            read_report,
+        ),
+    )
+
+    runner.run(task_view(attempt_count=2))
+
+    assert calls == [
+        ("read_v1", audit),
+        ("rebuild_v2", source, audit),
+        ("translate", normalized),
+        ("render", report),
+    ]
+
+
+def test_runner_does_not_rebuild_malformed_v2_audit(tmp_path):
+    normalized = make_checkpoint(tmp_path)
+    audit = normalized.with_name("formula_audit.json")
+    audit.write_text('{"schema_version": 2}', encoding="utf-8")
+    calls = []
+
+    def read_report(path):
+        raise FormulaAuditError("malformed v2")
+
+    def fail(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("must not continue after malformed v2")
+
+    runner = TaskRunner(
+        settings(tmp_path),
+        WorkflowServices(
+            lambda *args, **kwargs: None,
+            fail,
+            fail,
+            fail,
+            read_report,
+        ),
+    )
+
+    with pytest.raises(FormulaAuditError, match="malformed v2"):
+        runner.run(task_view(attempt_count=2))
+
+    assert calls == []
 
 
 @pytest.mark.parametrize("raw_count", [0, 2])
