@@ -8,6 +8,7 @@ from functools import partial
 from anyio import to_thread
 
 from pdf_trans.web.repository import LogView, TaskRepository, TaskView
+from pdf_trans.web.time_display import format_beijing_time
 
 POLL_SECONDS = 0.5
 KEEPALIVE_SECONDS = 15.0
@@ -21,6 +22,7 @@ def task_to_dict(task: TaskView) -> dict[str, object]:
         "attempt_count": task.attempt_count,
         "error_message": task.error_message,
         "created_at": task.created_at.isoformat(),
+        "created_at_display": format_beijing_time(task.created_at),
         "updated_at": task.updated_at.isoformat(),
         "started_at": (
             task.started_at.isoformat() if task.started_at else None

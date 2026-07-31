@@ -1,8 +1,42 @@
 import json
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
-from pdf_trans.web.streams import log_event_stream, task_event_stream
+from pdf_trans.web.streams import (
+    log_event_stream,
+    task_event_stream,
+    task_to_dict,
+)
+
+
+@pytest.mark.parametrize(
+    "created_at",
+    [
+        datetime(2026, 7, 31, 0, 54, 28),
+        datetime(2026, 7, 31, 0, 54, 28, tzinfo=timezone.utc),
+    ],
+)
+def test_task_dict_displays_naive_and_aware_utc_as_beijing_time(
+    created_at,
+) -> None:
+    task = SimpleNamespace(
+        id="a",
+        original_filename="a.pdf",
+        status="queued",
+        attempt_count=0,
+        error_message=None,
+        created_at=created_at,
+        updated_at=created_at,
+        started_at=None,
+        finished_at=None,
+    )
+
+    payload = task_to_dict(task)
+
+    assert payload["created_at_display"] == "2026-07-31 08:54:28"
+    assert payload["created_at"] == created_at.isoformat()
 
 
 @pytest.mark.anyio
