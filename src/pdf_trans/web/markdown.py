@@ -9,13 +9,9 @@ from urllib.parse import quote, unquote, urlsplit
 import nh3
 from markdown_it import MarkdownIt
 
+from pdf_trans.formula_scanner import scan_formula_spans
+
 PARSER = MarkdownIt("commonmark", {"html": True})
-_MATH_DELIMITERS = (
-    ("$$", "$$"),
-    (r"\[", r"\]"),
-    (r"\(", r"\)"),
-    ("$", "$"),
-)
 ALLOWED_TAGS = {
     "a",
     "blockquote",
@@ -61,46 +57,6 @@ class _ProtectedMath:
     source: str
 
 
-def _is_escaped(source: str, position: int) -> bool:
-    backslashes = 0
-    position -= 1
-    while position >= 0 and source[position] == "\\":
-        backslashes += 1
-        position -= 1
-    return backslashes % 2 == 1
-
-
-def _opening_at(source: str, position: int) -> tuple[str, str] | None:
-    for opening, closing in _MATH_DELIMITERS:
-        if not source.startswith(opening, position):
-            continue
-        if _is_escaped(source, position):
-            continue
-        if opening == "$" and source.startswith("$$", position):
-            continue
-        return opening, closing
-    return None
-
-
-def _find_closing(
-    source: str,
-    start: int,
-    closing: str,
-) -> int | None:
-    position = start
-    while True:
-        position = source.find(closing, position)
-        if position < 0:
-            return None
-        if _is_escaped(source, position):
-            position += len(closing)
-            continue
-        if closing == "$" and source.startswith("$$", position):
-            position += 2
-            continue
-        return position
-
-
 def _protect_math(
     source: str,
 ) -> tuple[str, tuple[_ProtectedMath, ...]]:
@@ -108,37 +64,20 @@ def _protect_math(
     parts: list[str] = []
     records: list[_ProtectedMath] = []
     copied_until = 0
-    position = 0
 
-    while position < len(source):
-        delimiters = _opening_at(source, position)
-        if delimiters is None:
-            position += 1
-            continue
-        opening, closing = delimiters
-        closing_at = _find_closing(
-            source,
-            position + len(opening),
-            closing,
-        )
-        if closing_at is None:
-            position += len(opening)
-            continue
-
-        formula_end = closing_at + len(closing)
+    for span in scan_formula_spans(source):
         placeholder = (
             f"PDFTRANSMATH{nonce}{len(records):08d}TOKEN"
         )
-        parts.append(source[copied_until:position])
+        parts.append(source[copied_until : span.start])
         parts.append(placeholder)
         records.append(
             _ProtectedMath(
                 placeholder=placeholder,
-                source=source[position:formula_end],
+                source=span.raw_formula,
             )
         )
-        copied_until = formula_end
-        position = formula_end
+        copied_until = span.end
 
     parts.append(source[copied_until:])
     return "".join(parts), tuple(records)
