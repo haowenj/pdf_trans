@@ -58,7 +58,7 @@ class FormulaCandidate:
 
 
 @dataclass(frozen=True)
-class _FormulaSpan:
+class FormulaSpan:
     raw_formula: str
     katex_formula: str
     is_block: bool
@@ -74,7 +74,7 @@ class _TableFormula:
     col_idx: int
     cell_tag: str
     formula_index: int
-    span: _FormulaSpan
+    span: FormulaSpan
 
 
 @dataclass
@@ -114,8 +114,8 @@ def _find_closing(
     return None
 
 
-def _formula_spans(source: str) -> tuple[_FormulaSpan, ...]:
-    spans: list[_FormulaSpan] = []
+def scan_formula_spans(source: str) -> tuple[FormulaSpan, ...]:
+    spans: list[FormulaSpan] = []
     position = 0
     while position < len(source):
         matched = False
@@ -135,7 +135,7 @@ def _formula_spans(source: str) -> tuple[_FormulaSpan, ...]:
                 continue
             raw_end = end + len(closing)
             spans.append(
-                _FormulaSpan(
+                FormulaSpan(
                     raw_formula=source[position:raw_end],
                     katex_formula=source[
                         position + len(opening) : end
@@ -155,7 +155,7 @@ def _formula_spans(source: str) -> tuple[_FormulaSpan, ...]:
     return tuple(spans)
 
 
-def _equation_formula(source: str) -> _FormulaSpan:
+def _equation_formula(source: str) -> FormulaSpan:
     stripped = source.strip()
     stripped_start = len(source) - len(source.lstrip())
     stripped_end = stripped_start + len(stripped)
@@ -165,7 +165,7 @@ def _equation_formula(source: str) -> _FormulaSpan:
             and stripped.endswith(closing)
             and len(stripped) >= len(opening) + len(closing)
         ):
-            return _FormulaSpan(
+            return FormulaSpan(
                 raw_formula=source,
                 katex_formula=stripped[
                     len(opening) : len(stripped) - len(closing)
@@ -176,7 +176,7 @@ def _equation_formula(source: str) -> _FormulaSpan:
                 katex_start=stripped_start + len(opening),
                 katex_end=stripped_end - len(closing),
             )
-    return _FormulaSpan(
+    return FormulaSpan(
         raw_formula=source,
         katex_formula=source,
         is_block=True,
@@ -321,7 +321,7 @@ class _TableFormulaParser(HTMLParser):
             return
         line, column = self.getpos()
         data_start = self._line_starts[line - 1] + column
-        for span in _formula_spans(data):
+        for span in scan_formula_spans(data):
             absolute_span = replace(
                 span,
                 start=data_start + span.start,
@@ -380,7 +380,7 @@ def _candidate(
     table_col_idx: int | None,
     cell_tag: str | None,
     formula_index: int,
-    span: _FormulaSpan,
+    span: FormulaSpan,
 ) -> FormulaCandidate:
     content_hash = hashlib.sha256(
         span.raw_formula.encode("utf-8")
@@ -439,7 +439,7 @@ FormulaReplacement = Mapping[tuple[str, bool], str]
 
 def _replace_spans(
     source: str,
-    spans: tuple[_FormulaSpan, ...],
+    spans: tuple[FormulaSpan, ...],
     replacements: FormulaReplacement,
 ) -> str:
     result = source
@@ -462,7 +462,7 @@ def replace_formula_spans(
 ) -> str:
     return _replace_spans(
         source,
-        _formula_spans(source),
+        scan_formula_spans(source),
         replacements,
     )
 
@@ -517,7 +517,7 @@ def scan_content_list(
                 )
         elif isinstance(text, str):
             for formula_index, span in enumerate(
-                _formula_spans(text)
+                scan_formula_spans(text)
             ):
                 candidates.append(
                     _candidate(

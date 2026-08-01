@@ -4,11 +4,13 @@ import pytest
 
 from pdf_trans.errors import FormulaAuditError
 from pdf_trans.formula_scanner import (
+    FormulaSpan,
     rebuild_raw_formula,
     replace_equation_formula,
     replace_formula_spans,
     replace_table_formula_spans,
     scan_content_list,
+    scan_formula_spans,
 )
 
 
@@ -57,6 +59,45 @@ def test_scans_equations_and_all_frontend_text_delimiters_without_mutation():
     assert formulas[0].page_idx == 2
     assert formulas[0].bbox == [1, 2, 3, 4]
     assert items == original
+
+
+def test_public_scanner_returns_all_supported_formula_spans():
+    source = r"a $x$ b $$y$$ c \(z\) d \[w\]"
+
+    spans = scan_formula_spans(source)
+
+    assert all(isinstance(span, FormulaSpan) for span in spans)
+    assert [span.raw_formula for span in spans] == [
+        "$x$",
+        "$$y$$",
+        r"\(z\)",
+        r"\[w\]",
+    ]
+    assert [span.katex_formula for span in spans] == ["x", "y", "z", "w"]
+    assert [span.is_block for span in spans] == [False, True, False, True]
+    assert [source[span.start : span.end] for span in spans] == [
+        span.raw_formula for span in spans
+    ]
+    assert [source[span.katex_start : span.katex_end] for span in spans] == [
+        span.katex_formula for span in spans
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        r"\$x\$",
+        r"\$\$x\$\$",
+        r"\\(x\\)",
+        r"\\[x\\]",
+        "$x",
+        "$$x",
+        r"\(x",
+        r"\[x",
+    ],
+)
+def test_public_scanner_treats_escaped_and_unclosed_boundaries_as_text(source):
+    assert scan_formula_spans(source) == ()
 
 
 def test_equation_without_outer_delimiters_is_one_display_formula():
