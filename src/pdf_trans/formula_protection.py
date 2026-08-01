@@ -5,6 +5,8 @@ import re
 import secrets
 from dataclasses import dataclass
 
+from pdf_trans.formula_scanner import scan_formula_spans
+
 
 _SENTINEL_MARKER = "PDFTRANS_FORMULA"
 _PLACEHOLDER_RE = re.compile(
@@ -30,52 +32,8 @@ class _FormulaRecord:
     placeholder: str
 
 
-def _is_escaped(text: str, position: int) -> bool:
-    backslashes = 0
-    position -= 1
-    while position >= 0 and text[position] == "\\":
-        backslashes += 1
-        position -= 1
-    return backslashes % 2 == 1
-
-
-def _find_closing(text: str, start: int, delimiter: str) -> int | None:
-    position = start
-    while position < len(text):
-        if (
-            text.startswith(delimiter, position)
-            and not _is_escaped(text, position)
-            and (delimiter == "$$" or not text.startswith("$$", position))
-        ):
-            return position
-        position += 1
-    return None
-
-
-def _formula_spans(text: str) -> tuple[tuple[int, int], ...]:
-    spans: list[tuple[int, int]] = []
-    position = 0
-    while position < len(text):
-        if text.startswith("$$", position) and not _is_escaped(text, position):
-            close = _find_closing(text, position + 2, "$$")
-            if close is not None:
-                spans.append((position, close + 2))
-                position = close + 2
-                continue
-            position += 2
-            continue
-        if text[position] == "$" and not _is_escaped(text, position):
-            close = _find_closing(text, position + 1, "$")
-            if close is not None:
-                spans.append((position, close + 1))
-                position = close + 1
-                continue
-        position += 1
-    return tuple(spans)
-
-
 def _extract_formulas(text: str) -> tuple[str, ...]:
-    return tuple(text[start:end] for start, end in _formula_spans(text))
+    return tuple(span.raw_formula for span in scan_formula_spans(text))
 
 
 class FormulaProtectionContext:
@@ -96,9 +54,9 @@ class FormulaProtectionContext:
         parts: list[str] = []
         formula_ids: list[str] = []
         cursor = 0
-        for start, end in _formula_spans(text):
-            parts.append(text[cursor:start])
-            original = text[start:end]
+        for span in scan_formula_spans(text):
+            parts.append(text[cursor : span.start])
+            original = span.raw_formula
             formula_id = f"{len(self._records) + 1:04d}"
             digest = hashlib.sha256(original.encode("utf-8")).hexdigest()
             placeholder = (
@@ -112,7 +70,7 @@ class FormulaProtectionContext:
             )
             formula_ids.append(formula_id)
             parts.append(placeholder)
-            cursor = end
+            cursor = span.end
         parts.append(text[cursor:])
         return ProtectedText("".join(parts), tuple(formula_ids))
 

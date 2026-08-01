@@ -49,8 +49,82 @@ def test_protects_multiline_block_formula_and_preserves_every_character():
     assert restored == f"之前\n{formula}\n之后"
 
 
+def test_protects_and_restores_all_supported_formula_boundaries_exactly():
+    source = r"Inline $a_b$, block $$c_d$$, paren \(e_f\), bracket \[g_h\]."
+    context = FormulaProtectionContext(nonce="0123456789abcdef")
+
+    protected = context.protect(source)
+
+    assert len(PLACEHOLDER_RE.findall(protected.model_text)) == 4
+    assert all(
+        formula not in protected.model_text
+        for formula in ("$a_b$", "$$c_d$$", r"\(e_f\)", r"\[g_h\]")
+    )
+    translated = protected.model_text.replace("Inline", "行内").replace(
+        "block", "块级"
+    )
+    assert context.restore(translated, protected) == source.replace(
+        "Inline", "行内"
+    ).replace("block", "块级")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda text, values: text.replace(values[0], "", 1), "缺失"),
+        (
+            lambda text, values: text.replace(
+                values[0],
+                values[0].replace(
+                    "0123456789abcdef", "fedcba9876543210"
+                ),
+                1,
+            ),
+            "篡改",
+        ),
+        (
+            lambda text, values: text.replace(values[0], "__FIRST__", 1)
+            .replace(values[1], values[0], 1)
+            .replace("__FIRST__", values[1], 1),
+            "顺序",
+        ),
+    ],
+)
+def test_rejects_invalid_backslash_formula_placeholders(mutate, message):
+    context = FormulaProtectionContext(nonce="0123456789abcdef")
+    protected = context.protect(r"Left \(x\) middle \[y\] right")
+    placeholders = PLACEHOLDER_RE.findall(protected.model_text)
+
+    assert len(placeholders) == 2
+    with pytest.raises(FormulaProtectionError, match=message):
+        context.restore(mutate(protected.model_text, placeholders), protected)
+
+
 def test_escaped_dollar_and_unclosed_delimiter_remain_plain_text():
     source = r"Cost \$5 and an unclosed $value"
+    context = FormulaProtectionContext()
+
+    protected = context.protect(source)
+
+    assert protected.model_text == source
+    assert protected.formula_ids == ()
+    assert context.restore(source, protected) == source
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        r"escaped \$x\$",
+        r"escaped \$\$x\$\$",
+        r"escaped \\(x\\)",
+        r"escaped \\[x\\]",
+        "unclosed $x",
+        "unclosed $$x",
+        r"unclosed \(x",
+        r"unclosed \[x",
+    ],
+)
+def test_body_protection_leaves_escaped_and_unclosed_boundaries_as_text(source):
     context = FormulaProtectionContext()
 
     protected = context.protect(source)
