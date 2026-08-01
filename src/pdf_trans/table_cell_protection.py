@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from html import escape
 
+from pdf_trans.formula_scanner import scan_formula_spans
+
 
 _MARKER_RE = re.compile(r"⟦([MH])(\d+)⟧")
 _ATOMIC_MARKER_RE = re.compile(r"⟦[MH]\d+⟧")
@@ -39,52 +41,8 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _is_escaped(text: str, position: int) -> bool:
-    backslashes = 0
-    position -= 1
-    while position >= 0 and text[position] == "\\":
-        backslashes += 1
-        position -= 1
-    return backslashes % 2 == 1
-
-
-def _find_closing(text: str, start: int, delimiter: str) -> int | None:
-    position = start
-    while position < len(text):
-        if (
-            text.startswith(delimiter, position)
-            and not _is_escaped(text, position)
-            and (delimiter == "$$" or not text.startswith("$$", position))
-        ):
-            return position
-        position += 1
-    return None
-
-
-def _formula_spans(text: str) -> tuple[tuple[int, int], ...]:
-    spans: list[tuple[int, int]] = []
-    position = 0
-    while position < len(text):
-        if text.startswith("$$", position) and not _is_escaped(text, position):
-            close = _find_closing(text, position + 2, "$$")
-            if close is not None:
-                spans.append((position, close + 2))
-                position = close + 2
-                continue
-            position += 2
-            continue
-        if text[position] == "$" and not _is_escaped(text, position):
-            close = _find_closing(text, position + 1, "$")
-            if close is not None:
-                spans.append((position, close + 1))
-                position = close + 1
-                continue
-        position += 1
-    return tuple(spans)
-
-
 def _extract_formulas(text: str) -> tuple[str, ...]:
-    return tuple(text[start:end] for start, end in _formula_spans(text))
+    return tuple(span.raw_formula for span in scan_formula_spans(text))
 
 
 def _family_name(family: str) -> str:
@@ -153,11 +111,11 @@ def protect_cell_text(
     pieces: list[str] = []
     markers: list[CellMarker] = []
     cursor = 0
-    for number, (start, end) in enumerate(_formula_spans(text)):
-        original = text[start:end]
+    for number, span in enumerate(scan_formula_spans(text)):
+        original = span.raw_formula
         marker_id = f"M{number}"
         placeholder = f"⟦{marker_id}⟧"
-        pieces.extend((text[cursor:start], placeholder))
+        pieces.extend((text[cursor : span.start], placeholder))
         markers.append(
             CellMarker(
                 marker_id=marker_id,
@@ -166,7 +124,7 @@ def protect_cell_text(
                 sha256=_digest(original),
             )
         )
-        cursor = end
+        cursor = span.end
     pieces.append(text[cursor:])
     return ProtectedCellSegment(
         model_text="".join(pieces),

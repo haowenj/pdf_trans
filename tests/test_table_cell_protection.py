@@ -46,6 +46,68 @@ def test_protects_inline_and_block_formulas_with_cell_local_ids():
     )
 
 
+def test_protects_and_restores_all_supported_cell_formula_boundaries_exactly():
+    source = r"Alpha $a$ beta $$b$$ gamma \(c\) delta \[d\]"
+
+    protected = protect_cell_text(source)
+
+    assert protected.model_text == (
+        "Alpha ⟦M0⟧ beta ⟦M1⟧ gamma ⟦M2⟧ delta ⟦M3⟧"
+    )
+    assert [value.original for value in protected.formula_markers] == [
+        "$a$",
+        "$$b$$",
+        r"\(c\)",
+        r"\[d\]",
+    ]
+    assert restore_cell_segment(
+        "甲 ⟦M0⟧ 乙 ⟦M1⟧ 丙 ⟦M2⟧ 丁 ⟦M3⟧",
+        protected,
+    ) == r"甲 $a$ 乙 $$b$$ 丙 \(c\) 丁 \[d\]"
+
+
+@pytest.mark.parametrize(
+    ("translated", "message"),
+    [
+        ("甲 ⟦M0⟧", "缺失"),
+        ("甲 ⟦M-0⟧ 乙 ⟦M1⟧", "篡改"),
+        ("甲 ⟦M1⟧ 乙 ⟦M0⟧", "顺序"),
+    ],
+)
+def test_rejects_invalid_backslash_formula_cell_markers(
+    translated,
+    message,
+):
+    protected = protect_cell_text(r"Alpha \(x\) Beta \[y\]")
+
+    assert len(protected.formula_markers) == 2
+    with pytest.raises(CellProtectionError, match=message):
+        restore_cell_segment(translated, protected)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        r"escaped \$x\$",
+        r"escaped \$\$x\$\$",
+        r"escaped \\(x\\)",
+        r"escaped \\[x\\]",
+        "unclosed $x",
+        "unclosed $$x",
+        r"unclosed \(x",
+        r"unclosed \[x",
+    ],
+)
+def test_cell_protection_leaves_escaped_and_unclosed_boundaries_as_text(
+    source,
+):
+    protected = protect_cell_text(source)
+
+    assert protected.model_text == source
+    assert protected.formula_markers == ()
+    assert restore_cell_segment("普通文本", protected) == "普通文本"
+
+
 def test_formula_ids_restart_for_each_cell():
     first = protect_cell_text(r"Alpha $x$")
     second = protect_cell_text(r"Beta $y$")

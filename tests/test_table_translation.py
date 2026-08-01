@@ -68,6 +68,30 @@ def test_formula_ids_restart_in_each_cell_and_latex_is_hidden():
     assert r"\frac" not in request_text
 
 
+def test_html_table_cell_protects_and_restores_all_formula_boundaries():
+    source = (
+        r"<table><tr><td>Values $a$, $$b$$, \(c\), and \[d\].</td>"
+        r"</tr></table>"
+    )
+
+    prepared = prepare_table_translation(source)
+
+    assert [work.model_text for work in prepared.work_items] == [
+        "Values ⟦M0⟧, ⟦M1⟧, ⟦M2⟧, and ⟦M3⟧."
+    ]
+    result = prepared.rebuild(
+        {"cell-0001": "值 ⟦M0⟧、⟦M1⟧、⟦M2⟧ 和 ⟦M3⟧。"},
+        {},
+    )
+
+    assert result.translated_html == (
+        r"<table><tr><td>值 $a$、$$b$$、\(c\) 和 \[d\]。</td>"
+        r"</tr></table>"
+    )
+    assert result.success_cell_count == 1
+    assert result.fallback_cell_count == 0
+
+
 @pytest.mark.parametrize(
     "source",
     [
