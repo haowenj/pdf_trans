@@ -82,7 +82,7 @@ def fake_translation_result(path):
         translated_path=path.with_name("translated_content_list.json"),
         stats=TranslationStats(
             1,
-            4,
+            7,
             1,
             1,
             0,
@@ -96,6 +96,11 @@ def fake_translation_result(path):
             skipped_table_success_count=1,
             text_model_call_count=2,
             table_model_call_count=2,
+            auxiliary_count=3,
+            skipped_auxiliary_success_count=1,
+            auxiliary_success_count=2,
+            auxiliary_failed_count=1,
+            auxiliary_model_call_count=3,
         ),
     )
 
@@ -151,7 +156,10 @@ def test_runner_starts_full_workflow_when_no_checkpoint_exists(tmp_path):
     assert "其中部分成功：1" in result.summary
     assert "成功单元格：3" in result.summary
     assert "回退原文单元格：1" in result.summary
-    assert "模型调用总数：4（正文 2，表格 2）" in result.summary
+    assert "附属文本翻译：" in result.summary
+    assert "总数：3" in result.summary
+    assert "跳过已有成功：1" in result.summary
+    assert "模型调用总数：7（正文 2，表格 2，附属文本 3）" in result.summary
 
 
 def test_runner_resumes_translation_and_renders_markdown(tmp_path):
@@ -190,7 +198,8 @@ def test_runner_resumes_translation_and_renders_markdown(tmp_path):
     assert "其中部分成功：1" in result.summary
     assert "成功单元格：3" in result.summary
     assert "回退原文单元格：1" in result.summary
-    assert "模型调用总数：4（正文 2，表格 2）" in result.summary
+    assert "附属文本翻译：" in result.summary
+    assert "模型调用总数：7（正文 2，表格 2，附属文本 3）" in result.summary
 
 
 def test_runner_reuses_valid_formula_audit_before_resume(tmp_path):

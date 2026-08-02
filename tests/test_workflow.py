@@ -716,7 +716,7 @@ def test_process_pdf_logs_stage_actions_counts_and_cross_page_merge(
         "清洗数据",
         "检测跨页段落",
         "合并跨页段落",
-        "翻译 text 对象",
+        "翻译正文、表格和附属文本",
         "渲染 Markdown",
     ):
         assert f"开始{stage}" in messages

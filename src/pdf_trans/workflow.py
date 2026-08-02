@@ -156,8 +156,8 @@ def process_translation_file(
 ) -> TranslationFileResult:
     with logged_stage(
         LOGGER,
-        "仅翻译工作流",
-        f"从 {normalized_path} 校验断点并翻译全部 text",
+            "仅翻译工作流",
+            f"从 {normalized_path} 校验断点并翻译正文、表格和附属文本",
     ) as workflow_stage:
         with logged_stage(
             LOGGER,
@@ -168,8 +168,8 @@ def process_translation_file(
             validation_stage.set_result(f"输入文件 {resolved}")
         with logged_stage(
             LOGGER,
-            "翻译 text 对象",
-            "按配置的线程数逐段调用 OpenAI 兼容接口",
+            "翻译正文、表格和附属文本",
+            "按配置的线程数调用 OpenAI 兼容接口并汇总各类统计",
         ) as translation_stage:
             result = _run_translation(
                 resolved,
@@ -341,8 +341,8 @@ def _process_pdf_stages(
 
     with logged_stage(
         LOGGER,
-        "翻译 text 对象",
-        "按配置的线程数逐段调用 OpenAI 兼容接口",
+        "翻译正文、表格和附属文本",
+        "按配置的线程数调用 OpenAI 兼容接口并汇总各类统计",
     ) as stage:
         translation_result = _run_translation(
             normalized_path,
