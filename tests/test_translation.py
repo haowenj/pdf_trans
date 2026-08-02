@@ -67,7 +67,9 @@ def test_translate_file_processes_every_text_object_and_preserves_non_text(tmp_p
     assert translated[0]["translated_text"] == "甲 [38]"
     assert translated[0]["translation_status"] == "success"
     assert translated[1] == items[1]
-    assert stats == TranslationStats(3, 3, 0, 3, 0, 0)
+    assert stats == TranslationStats(
+        3, 3, 0, 3, 0, 0, text_model_call_count=3
+    )
 
 
 class PlaceholderProbeTranslator:
@@ -156,7 +158,9 @@ def test_placeholder_validation_exhaustion_never_writes_success(tmp_path):
     assert result["translated_text"] is None
     assert result["translation_status"] == "failed"
     assert "公式占位符" in result["translation_error"]
-    assert stats == TranslationStats(1, 2, 0, 0, 1, 0)
+    assert stats == TranslationStats(
+        1, 2, 0, 0, 1, 0, text_model_call_count=2
+    )
 
 
 def test_retries_failures_and_continues_with_model_call_count(tmp_path):
@@ -182,7 +186,9 @@ def test_retries_failures_and_continues_with_model_call_count(tmp_path):
     )
 
     assert translator.received == ["A", "A", "B", "B"]
-    assert stats == TranslationStats(2, 4, 0, 1, 1, 0)
+    assert stats == TranslationStats(
+        2, 4, 0, 1, 1, 0, text_model_call_count=4
+    )
     result = read_items(output)
     assert result[0]["translation_status"] == "success"
     assert result[1]["translated_text"] is None
@@ -223,7 +229,17 @@ def test_resume_skips_success_and_retries_pending_and_failed(tmp_path):
     )
 
     assert translator.received == ["B", "C"]
-    assert stats == TranslationStats(3, 2, 1, 3, 0, 0)
+    assert stats == TranslationStats(
+        3,
+        2,
+        1,
+        3,
+        0,
+        0,
+        table_count=1,
+        table_failed_count=1,
+        text_model_call_count=2,
+    )
     result = read_items(output)
     assert result[0]["translated_text"] == "旧甲"
     assert result[1]["translated_text"] == "新乙"
@@ -368,7 +384,9 @@ def test_translate_file_runs_up_to_configured_concurrency(tmp_path):
     )
 
     assert translator.max_active == 3
-    assert stats == TranslationStats(3, 3, 0, 3, 0, 0)
+    assert stats == TranslationStats(
+        3, 3, 0, 3, 0, 0, text_model_call_count=3
+    )
 
 
 class DelayedTranslator:
@@ -588,7 +606,18 @@ def test_translate_file_batches_table_nodes_by_id_and_preserves_source_html(tmp_
     assert result["table_translation_success_cell_count"] == 3
     assert result["table_translation_fallback_cell_count"] == 0
     assert result["table_translation_fallbacks"] == []
-    assert stats == TranslationStats(0, 1, 0, 0, 0, 0)
+    assert stats == TranslationStats(
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        table_count=1,
+        table_success_count=1,
+        table_translation_success_cell_count=3,
+        table_model_call_count=1,
+    )
 
 
 class CorruptingTableFormulaTranslator:
@@ -752,7 +781,20 @@ def test_table_translation_exception_falls_back_and_document_continues(
     assert result[1]["table_translation_fallbacks"] == [
         {"cell_id": "cell-0001", "error": "table service unavailable"}
     ]
-    assert stats == TranslationStats(1, 2, 0, 1, 0, 0)
+    assert stats == TranslationStats(
+        1,
+        2,
+        0,
+        1,
+        0,
+        0,
+        table_count=1,
+        table_success_count=1,
+        table_partial_success_count=1,
+        table_translation_fallback_cell_count=1,
+        text_model_call_count=1,
+        table_model_call_count=1,
+    )
     messages = "\n".join(record.getMessage() for record in caplog.records)
     assert "第 1 张表翻译完成：success" in messages
     assert "回退 1 个单元格" in messages
@@ -824,7 +866,17 @@ def test_resume_skips_successful_table_by_original_table_body(tmp_path):
     assert resumed["table_translation_success_cell_count"] == 0
     assert resumed["table_translation_fallback_cell_count"] == 0
     assert resumed["table_translation_fallbacks"] == []
-    assert stats == TranslationStats(0, 0, 0, 0, 0, 0)
+    assert stats == TranslationStats(
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        table_count=1,
+        table_success_count=1,
+        skipped_table_success_count=1,
+    )
 
 
 @pytest.mark.parametrize(
@@ -899,6 +951,167 @@ def cell_response(*items):
         },
         ensure_ascii=False,
     )
+
+
+def test_stats_aggregate_text_and_table_successes_and_model_calls(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = "<table><tr><td>Alpha</td><td>Beta</td></tr></table>"
+    source.write_text(
+        json.dumps([
+            {"type": "text", "text": "Paragraph"},
+            {"type": "table", "table_body": table_body},
+        ]),
+        encoding="utf-8",
+    )
+
+    class Translator:
+        def translate(self, text, *, response_format=None):
+            if response_format is None:
+                return "正文译文"
+            payload = json.loads(text)
+            return cell_response(*[
+                (cell["cell_id"], cell["text"] + "译文")
+                for cell in payload["cells"]
+            ])
+
+    stats = translate_content_list_file(
+        source, output, Translator(), max_retries=0, concurrency=1
+    )
+
+    assert stats.text_count == 1
+    assert stats.success_count == 1
+    assert stats.failed_count == 0
+    assert stats.pending_count == 0
+    assert stats.table_count == 1
+    assert stats.table_success_count == 1
+    assert stats.table_failed_count == 0
+    assert stats.table_pending_count == 0
+    assert stats.table_partial_success_count == 0
+    assert stats.table_translation_success_cell_count == 2
+    assert stats.table_translation_fallback_cell_count == 0
+    assert stats.model_call_count == 2
+    assert stats.text_model_call_count == 1
+    assert stats.table_model_call_count == 1
+
+
+def test_stats_count_failed_table_without_converting_it_to_text_failure(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{
+            "type": "table",
+            "table_body": "<table><tr><td>broken</tr></table>",
+        }]),
+        encoding="utf-8",
+    )
+
+    stats = translate_content_list_file(
+        source, output, FakeTranslator([]), max_retries=0, concurrency=1
+    )
+
+    assert stats.text_count == 0
+    assert stats.success_count == 0
+    assert stats.failed_count == 0
+    assert stats.table_count == 1
+    assert stats.table_success_count == 0
+    assert stats.table_failed_count == 1
+    assert stats.table_pending_count == 0
+    assert stats.model_call_count == 0
+
+
+def test_stats_sum_partial_table_fallbacks_across_multiple_tables(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_bodies = [
+        "<table><tr><td>Alpha</td><td>Beta</td></tr></table>",
+        "<table><tr><td>Gamma</td><td>Delta</td></tr></table>",
+    ]
+    source.write_text(
+        json.dumps([
+            {"type": "table", "table_body": body}
+            for body in table_bodies
+        ]),
+        encoding="utf-8",
+    )
+
+    def respond(payload, call_number):
+        cells = payload["cells"]
+        if call_number == 1:
+            return cell_response((cells[0]["cell_id"], "已译"))
+        return cell_response(*[
+            (cell["cell_id"], cell["text"] + "译文")
+            for cell in cells
+        ])
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        CellBatchTranslator(respond),
+        max_retries=0,
+        concurrency=1,
+    )
+
+    assert stats.table_count == 2
+    assert stats.table_success_count == 2
+    assert stats.table_partial_success_count == 1
+    assert stats.table_failed_count == 0
+    assert stats.table_translation_success_cell_count == 3
+    assert stats.table_translation_fallback_cell_count == 1
+
+
+def test_resume_counts_skipped_successful_text_and_table_separately(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    table_body = "<table><tr><td>Alpha</td></tr></table>"
+    normalized = [
+        {"type": "text", "text": "正文"},
+        {"type": "table", "table_body": table_body},
+    ]
+    source.write_text(json.dumps(normalized), encoding="utf-8")
+    output.write_text(json.dumps([
+        {
+            **normalized[0],
+            "translated_text": "旧正文",
+            "translation_status": "success",
+        },
+        {
+            **normalized[1],
+            "translated_table_body": table_body,
+            "translation_status": "success",
+        },
+    ]), encoding="utf-8")
+
+    stats = translate_content_list_file(
+        source, output, FakeTranslator([]), max_retries=0, concurrency=1
+    )
+
+    assert stats.skipped_success_count == 1
+    assert stats.skipped_table_success_count == 1
+    assert stats.success_count == 1
+    assert stats.table_success_count == 1
+    assert stats.model_call_count == 0
+
+
+def test_pending_table_still_raises_after_translation(tmp_path, monkeypatch):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{
+            "type": "table",
+            "table_body": "<table><tr><td>Alpha</td></tr></table>",
+        }]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "pdf_trans.translation._collect_table_translation_work",
+        lambda items: [],
+    )
+
+    with pytest.raises(TranslationContentError, match="pending 表格"):
+        translate_content_list_file(
+            source, output, FakeTranslator([]), max_retries=0, concurrency=1
+        )
 
 
 def test_table_retries_only_failed_cell_and_keeps_successful_formula_cell(

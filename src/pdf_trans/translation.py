@@ -61,6 +61,43 @@ class TranslationStats:
     success_count: int
     failed_count: int
     pending_count: int
+    table_count: int = 0
+    table_success_count: int = 0
+    table_failed_count: int = 0
+    table_pending_count: int = 0
+    table_partial_success_count: int = 0
+    table_translation_success_cell_count: int = 0
+    table_translation_fallback_cell_count: int = 0
+    skipped_table_success_count: int = 0
+    text_model_call_count: int = 0
+    table_model_call_count: int = 0
+
+
+def format_translation_stats(stats: TranslationStats) -> str:
+    return "\n".join(
+        (
+            "正文翻译：",
+            f"  总数：{stats.text_count}",
+            f"  跳过已有成功：{stats.skipped_success_count}",
+            f"  成功：{stats.success_count}",
+            f"  失败：{stats.failed_count}",
+            f"  pending：{stats.pending_count}",
+            "表格翻译：",
+            f"  总数：{stats.table_count}",
+            f"  跳过已有成功：{stats.skipped_table_success_count}",
+            f"  成功：{stats.table_success_count}",
+            f"  其中部分成功：{stats.table_partial_success_count}",
+            f"  失败：{stats.table_failed_count}",
+            f"  pending：{stats.table_pending_count}",
+            "  成功单元格："
+            f"{stats.table_translation_success_cell_count}",
+            "  回退原文单元格："
+            f"{stats.table_translation_fallback_cell_count}",
+            "模型调用总数："
+            f"{stats.model_call_count}（正文 {stats.text_model_call_count}，"
+            f"表格 {stats.table_model_call_count}）",
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -266,12 +303,13 @@ def _restore_table_state(
 
 def _prepare_resumed_items(
     normalized: list[dict[str, Any]], existing: list[dict[str, Any]]
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int]:
     if len(normalized) != len(existing):
         raise TranslationContentError("断点文件与规范化内容的对象数量不一致")
 
     prepared: list[dict[str, Any]] = []
     skipped_success = 0
+    skipped_table_success = 0
     for index, (current, old) in enumerate(zip(normalized, existing)):
         if not _same_identity(current, old):
             raise TranslationContentError(
@@ -280,6 +318,8 @@ def _prepare_resumed_items(
         item = copy.deepcopy(current)
         if current.get("type") == "table":
             _restore_table_state(item, old, index)
+            if old.get("translation_status") == "success":
+                skipped_table_success += 1
             prepared.append(item)
             continue
         if current.get("type") != "text":
@@ -316,7 +356,7 @@ def _prepare_resumed_items(
                 f"断点文件第 {index} 个 text 对象的 translation_status 无效"
             )
         prepared.append(item)
-    return prepared, skipped_success
+    return prepared, skipped_success, skipped_table_success
 
 
 def _translate_one(
@@ -707,19 +747,23 @@ def translate_content_list_file(
             if not output.is_file():
                 raise TranslationContentError("断点文件不是普通文件")
             existing = _read_object_array(output, "断点翻译结果")
-            items, skipped_success = _prepare_resumed_items(
+            items, skipped_success, skipped_table_success = _prepare_resumed_items(
                 normalized,
                 existing,
             )
         else:
             items = _prepare_new_items(normalized)
             skipped_success = 0
+            skipped_table_success = 0
 
         writer = checkpoint_writer or write_json_atomic
         writer(output, items)
         text_count = sum(item.get("type") == "text" for item in items)
+        table_count = sum(item.get("type") == "table" for item in items)
         checkpoint_stage.set_result(
-            f"text 共 {text_count} 段，跳过已有 success {skipped_success} 段"
+            f"正文共 {text_count} 段，跳过已有 success {skipped_success} 段；"
+            f"表格共 {table_count} 张，跳过已有 success "
+            f"{skipped_table_success} 张"
         )
 
     work = _collect_translation_work(items)
@@ -731,6 +775,8 @@ def translate_content_list_file(
         concurrency,
     )
     model_calls = 0
+    text_model_calls = 0
+    table_model_calls = 0
     executor = ThreadPoolExecutor(
         max_workers=concurrency,
         thread_name_prefix="pdf-trans",
@@ -765,6 +811,10 @@ def translate_content_list_file(
             else:
                 _apply_outcome(items[outcome.index], outcome)
             model_calls += outcome.model_call_count
+            if isinstance(outcome, TableTranslationOutcome):
+                table_model_calls += outcome.model_call_count
+            else:
+                text_model_calls += outcome.model_call_count
             writer(output, items)
     except BaseException:
         for future in futures:
@@ -781,19 +831,52 @@ def translate_content_list_file(
     ):
         raise TranslationContentError("正式翻译结束后仍存在 pending 表格")
 
-    counts = Counter(
+    text_counts = Counter(
         item.get("translation_status")
         for item in items
         if item.get("type") == "text"
     )
-    pending = counts.get("pending", 0)
+    table_counts = Counter(
+        item.get("translation_status")
+        for item in items
+        if item.get("type") == "table"
+    )
+    pending = text_counts.get("pending", 0)
+    table_pending = table_counts.get("pending", 0)
     if pending:
         raise TranslationContentError("正式翻译结束后仍存在 pending 对象")
+    successful_tables = [
+        item
+        for item in items
+        if (
+            item.get("type") == "table"
+            and item.get("translation_status") == "success"
+        )
+    ]
     return TranslationStats(
-        text_count=counts.total(),
+        text_count=text_counts.total(),
         model_call_count=model_calls,
         skipped_success_count=skipped_success,
-        success_count=counts.get("success", 0),
-        failed_count=counts.get("failed", 0),
+        success_count=text_counts.get("success", 0),
+        failed_count=text_counts.get("failed", 0),
         pending_count=pending,
+        table_count=table_counts.total(),
+        table_success_count=table_counts.get("success", 0),
+        table_failed_count=table_counts.get("failed", 0),
+        table_pending_count=table_pending,
+        table_partial_success_count=sum(
+            item.get("table_translation_partial") is True
+            for item in successful_tables
+        ),
+        table_translation_success_cell_count=sum(
+            item.get("table_translation_success_cell_count", 0)
+            for item in successful_tables
+        ),
+        table_translation_fallback_cell_count=sum(
+            item.get("table_translation_fallback_cell_count", 0)
+            for item in successful_tables
+        ),
+        skipped_table_success_count=skipped_table_success,
+        text_model_call_count=text_model_calls,
+        table_model_call_count=table_model_calls,
     )
