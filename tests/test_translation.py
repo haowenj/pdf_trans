@@ -1570,7 +1570,7 @@ def test_resume_rejects_changed_auxiliary_source_and_invalid_checkpoint(
             }]
         },
     }]), encoding="utf-8")
-    with pytest.raises(TranslationContentError, match="有效译文"):
+    with pytest.raises(TranslationContentError, match="状态与译文"):
         translate_content_list_file(
             source, output, RecordingTranslator([]), concurrency=1
         )
