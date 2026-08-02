@@ -28,6 +28,7 @@ def _render_auxiliary_list(
     item: dict[str, Any],
     source_field: str,
     translated_field: str,
+    replacements: FormulaReplacement,
 ) -> list[str]:
     raw_values = item.get(source_field)
     if not isinstance(raw_values, list):
@@ -49,6 +50,8 @@ def _render_auxiliary_list(
         ):
             value = translated_values[index]
         if _is_non_blank_string(value):
+            if replacements:
+                value = replace_formula_spans(value, replacements)
             rendered.append(value)
     return rendered
 
@@ -92,6 +95,7 @@ def _render_item(
                 item,
                 f"{item_type}_caption",
                 f"translated_{item_type}_caption",
+                replacements,
             )
         )
         parts.extend(
@@ -99,6 +103,7 @@ def _render_item(
                 item,
                 f"{item_type}_footnote",
                 f"translated_{item_type}_footnote",
+                replacements,
             )
         )
         return parts
@@ -108,6 +113,7 @@ def _render_item(
             item,
             "table_caption",
             "translated_table_caption",
+            replacements,
         )
         table_body = item.get("table_body")
         translated_table_body = item.get("translated_table_body")
@@ -128,6 +134,7 @@ def _render_item(
                 item,
                 "table_footnote",
                 "translated_table_footnote",
+                replacements,
             )
         )
         return parts

@@ -101,11 +101,6 @@ def format_translation_stats(stats: TranslationStats) -> str:
         f"模型调用总数：{stats.model_call_count}（正文 "
         f"{stats.text_model_call_count}，表格 {stats.table_model_call_count}，"
         f"附属文本 {stats.auxiliary_model_call_count}）"
-        if stats.auxiliary_count
-        else (
-            f"模型调用总数：{stats.model_call_count}（正文 "
-            f"{stats.text_model_call_count}，表格 {stats.table_model_call_count}）"
-        )
     )
     return "\n".join(
         (
@@ -577,8 +572,14 @@ def _translate_one(
     text: str,
     translator: TextTranslator,
     max_retries: int,
+    unit_name: str = "段",
 ) -> TranslationOutcome:
     started = time.perf_counter()
+    log_label = (
+        f"第 {section_number} 段"
+        if unit_name == "段"
+        else f"第 {section_number} 条{unit_name}"
+    )
     formula_context = FormulaProtectionContext()
     try:
         protected = formula_context.protect(text)
@@ -586,8 +587,8 @@ def _translate_one(
         elapsed = time.perf_counter() - started
         error = f"公式保护准备失败：{exc}"
         LOGGER.error(
-            "第 %d 段翻译完成：failed，耗时 %.2f 秒，错误：%s",
-            section_number,
+            "%s翻译完成：failed，耗时 %.2f 秒，错误：%s",
+            log_label,
             elapsed,
             error,
         )
@@ -605,8 +606,8 @@ def _translate_one(
     total_attempts = max_retries + 1
     for attempt in range(1, total_attempts + 1):
         LOGGER.info(
-            "第 %d 段开始翻译：第 %d/%d 次调用",
-            section_number,
+            "%s开始翻译：第 %d/%d 次调用",
+            log_label,
             attempt,
             total_attempts,
         )
@@ -619,8 +620,8 @@ def _translate_one(
             last_error = exc
             if attempt < total_attempts:
                 LOGGER.warning(
-                    "第 %d 段第 %d 次调用失败：%s，将重试",
-                    section_number,
+                    "%s第 %d 次调用失败：%s，将重试",
+                    log_label,
                     attempt,
                     exc,
                 )
@@ -628,8 +629,8 @@ def _translate_one(
             elapsed = time.perf_counter() - started
             error = str(exc) or exc.__class__.__name__
             LOGGER.error(
-                "第 %d 段翻译完成：failed，耗时 %.2f 秒，错误：%s",
-                section_number,
+                "%s翻译完成：failed，耗时 %.2f 秒，错误：%s",
+                log_label,
                 elapsed,
                 error,
             )
@@ -644,8 +645,8 @@ def _translate_one(
             )
         elapsed = time.perf_counter() - started
         LOGGER.info(
-            "第 %d 段翻译完成：success，耗时 %.2f 秒，译文 %d 字符",
-            section_number,
+            "%s翻译完成：success，耗时 %.2f 秒，译文 %d 字符",
+            log_label,
             elapsed,
             len(translated),
         )
@@ -659,7 +660,7 @@ def _translate_one(
             elapsed_seconds=elapsed,
         )
 
-    raise AssertionError(f"第 {section_number} 段未产生翻译结果：{last_error}")
+    raise AssertionError(f"{log_label}未产生翻译结果：{last_error}")
 
 
 def _translate_auxiliary_one(
@@ -677,6 +678,7 @@ def _translate_auxiliary_one(
         text,
         translator,
         max_retries,
+        unit_name="附属文本",
     )
     return AuxiliaryTranslationOutcome(
         index=index,

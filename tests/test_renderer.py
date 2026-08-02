@@ -290,6 +290,28 @@ def test_render_items_selects_auxiliary_translation_per_position_and_keeps_order
     )
 
 
+def test_render_items_applies_formula_audit_to_auxiliary_text():
+    raw = r"$\frac {m 3}{h}$"
+    normalized = r"$\frac{\mathrm{m}^{3}}{\mathrm{h}}$"
+    item = {
+        "type": "image",
+        "image_caption": ["原图题"],
+        "translated_image_caption": [f"译图题 {raw}"],
+        "auxiliary_translation": {
+            "image_caption": [
+                {"translation_status": "success", "translation_error": None},
+            ]
+        },
+    }
+    report = SimpleNamespace(
+        accepted_replacements={(raw, False): normalized}
+    )
+
+    assert render_items([item], formula_audit=report) == (
+        f"译图题 {normalized}\n"
+    )
+
+
 def test_render_items_applies_only_accepted_formula_replacements():
     report = SimpleNamespace(
         accepted_replacements={

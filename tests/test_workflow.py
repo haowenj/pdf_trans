@@ -604,7 +604,7 @@ def test_process_translation_file_logs_body_and_table_statistics(
     assert "其中部分成功：1" in messages
     assert "成功单元格：5" in messages
     assert "回退原文单元格：2" in messages
-    assert "模型调用总数：4（正文 1，表格 3）" in messages
+    assert "模型调用总数：4（正文 1，表格 3，附属文本 0）" in messages
 
 
 def test_process_translation_file_requires_exact_normalized_filename(tmp_path):
