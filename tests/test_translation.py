@@ -38,6 +38,21 @@ class FakeTranslator:
         return result
 
 
+class RecordingTranslator:
+    def __init__(self, results):
+        self.results = iter(results)
+        self.received = []
+        self.response_formats = []
+
+    def translate(self, text, *, response_format=None):
+        self.received.append(text)
+        self.response_formats.append(response_format)
+        result = next(self.results)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+
 def read_items(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -1320,3 +1335,260 @@ def test_long_table_keeps_density_translation_when_later_formula_cell_fails(
         len(request["cells"]) <= 12
         for request in translator.requests
     )
+
+
+def test_auxiliary_translation_covers_all_six_fields_and_counts_calls(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    items = [
+        {
+            "type": "table",
+            "table_caption": ["TABLE 1 Requirements"],
+            "table_footnote": ["Table note"],
+            "table_body": "<table><tr><td>123</td></tr></table>",
+        },
+        {
+            "type": "image",
+            "img_path": "images/a.png",
+            "image_caption": ["IMAGE Caption"],
+            "image_footnote": ["Image note"],
+        },
+        {
+            "type": "chart",
+            "img_path": "images/chart.png",
+            "chart_caption": ["CHART Caption"],
+            "chart_footnote": ["Chart note"],
+        },
+    ]
+    source.write_text(json.dumps(items), encoding="utf-8")
+    translator = RecordingTranslator(
+        ["表1 要求", "表格注", "图片说明", "图片注", "图表说明", "图表注"]
+    )
+
+    stats = translate_content_list_file(
+        source, output, translator, max_retries=0, concurrency=1
+    )
+
+    translated = read_items(output)
+    assert translated[0]["translated_table_caption"] == ["表1 要求"]
+    assert translated[0]["translated_table_footnote"] == ["表格注"]
+    assert translated[1]["translated_image_caption"] == ["图片说明"]
+    assert translated[1]["translated_image_footnote"] == ["图片注"]
+    assert translated[2]["translated_chart_caption"] == ["图表说明"]
+    assert translated[2]["translated_chart_footnote"] == ["图表注"]
+    assert all(
+        translated[index]["auxiliary_translation"][field][0]
+        == {"translation_status": "success", "translation_error": None}
+        for index, field in (
+            (0, "table_caption"),
+            (0, "table_footnote"),
+            (1, "image_caption"),
+            (1, "image_footnote"),
+            (2, "chart_caption"),
+            (2, "chart_footnote"),
+        )
+    )
+    assert stats.auxiliary_count == 6
+    assert stats.skipped_auxiliary_success_count == 0
+    assert stats.auxiliary_success_count == 6
+    assert stats.auxiliary_failed_count == 0
+    assert stats.auxiliary_pending_count == 0
+    assert stats.auxiliary_model_call_count == 6
+    assert stats.model_call_count == 6
+
+
+def test_auxiliary_items_fail_independently_and_keep_array_positions(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    items = [{
+        "type": "table",
+        "table_footnote": ["first", "second", "third"],
+        "table_body": "<table><tr><td>123</td></tr></table>",
+    }]
+    source.write_text(json.dumps(items), encoding="utf-8")
+    translator = RecordingTranslator(["第一", RuntimeError("timeout"), "第三"])
+
+    stats = translate_content_list_file(
+        source, output, translator, max_retries=0, concurrency=1
+    )
+
+    item = read_items(output)[0]
+    assert item["table_footnote"] == ["first", "second", "third"]
+    assert item["translated_table_footnote"] == ["第一", None, "第三"]
+    assert item["auxiliary_translation"]["table_footnote"] == [
+        {"translation_status": "success", "translation_error": None},
+        {"translation_status": "failed", "translation_error": "timeout"},
+        {"translation_status": "success", "translation_error": None},
+    ]
+    assert stats.auxiliary_count == 3
+    assert stats.auxiliary_success_count == 2
+    assert stats.auxiliary_failed_count == 1
+    assert stats.auxiliary_pending_count == 0
+    assert stats.table_failed_count == 0
+
+
+def test_auxiliary_translation_reuses_formula_protection_for_all_boundaries(
+    tmp_path,
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    formulas = ["$x$", "$$y$$", r"\(z\)", r"\[w\]"]
+    captions = [f"Formula {formula}" for formula in formulas]
+    source.write_text(
+        json.dumps([{
+            "type": "image",
+            "image_caption": captions,
+        }]),
+        encoding="utf-8",
+    )
+
+    class FormulaPreservingTranslator:
+        def __init__(self):
+            self.received = []
+
+        def translate(self, text, *, response_format=None):
+            self.received.append(text)
+            return text.replace("Formula", "公式")
+
+    translator = FormulaPreservingTranslator()
+    stats = translate_content_list_file(
+        source, output, translator, max_retries=0, concurrency=1
+    )
+
+    item = read_items(output)[0]
+    assert item["translated_image_caption"] == [
+        f"公式 {formula}" for formula in formulas
+    ]
+    assert all(formula not in text for text in translator.received for formula in formulas)
+    assert stats.auxiliary_success_count == 4
+
+
+def test_auxiliary_formula_placeholder_tampering_falls_back_only_one_item(
+    tmp_path,
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{
+            "type": "image",
+            "image_caption": ["Safe $x$", "Broken $y$"],
+        }]),
+        encoding="utf-8",
+    )
+
+    class TamperingTranslator:
+        def __init__(self):
+            self.calls = 0
+
+        def translate(self, text, *, response_format=None):
+            self.calls += 1
+            if self.calls == 2:
+                return text.replace("PDFTRANS_FORMULA", "BROKEN")
+            return text.replace("Safe", "安全")
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        TamperingTranslator(),
+        max_retries=0,
+        concurrency=1,
+    )
+
+    item = read_items(output)[0]
+    assert item["translated_image_caption"] == ["安全 $x$", None]
+    assert item["auxiliary_translation"]["image_caption"][1]["translation_status"] == "failed"
+    assert "公式" in item["auxiliary_translation"]["image_caption"][1]["translation_error"]
+    assert stats.auxiliary_success_count == 1
+    assert stats.auxiliary_failed_count == 1
+
+
+def test_resume_skips_only_successful_auxiliary_items(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    normalized = [{
+        "type": "image",
+        "image_caption": ["one", "two", "three"],
+    }]
+    source.write_text(json.dumps(normalized), encoding="utf-8")
+    output.write_text(json.dumps([{
+        **normalized[0],
+        "translated_image_caption": ["一", None, None],
+        "auxiliary_translation": {
+            "image_caption": [
+                {"translation_status": "success", "translation_error": None},
+                {"translation_status": "failed", "translation_error": "old"},
+                {"translation_status": "pending", "translation_error": None},
+            ]
+        },
+    }]), encoding="utf-8")
+    translator = RecordingTranslator(["二", "三"])
+
+    stats = translate_content_list_file(
+        source, output, translator, max_retries=0, concurrency=1
+    )
+
+    assert translator.received == ["two", "three"]
+    item = read_items(output)[0]
+    assert item["translated_image_caption"] == ["一", "二", "三"]
+    assert stats.auxiliary_count == 3
+    assert stats.skipped_auxiliary_success_count == 1
+    assert stats.auxiliary_success_count == 3
+    assert stats.auxiliary_model_call_count == 2
+
+
+def test_resume_rejects_changed_auxiliary_source_and_invalid_checkpoint(
+    tmp_path,
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    normalized = [{"type": "image", "image_caption": ["original"]}]
+    source.write_text(json.dumps(normalized), encoding="utf-8")
+    output.write_text(json.dumps([{
+        "type": "image",
+        "image_caption": ["changed"],
+        "translated_image_caption": ["旧译"],
+        "auxiliary_translation": {
+            "image_caption": [{
+                "translation_status": "success",
+                "translation_error": None,
+            }]
+        },
+    }]), encoding="utf-8")
+
+    with pytest.raises(TranslationContentError, match="身份字段不一致"):
+        translate_content_list_file(
+            source, output, RecordingTranslator([]), concurrency=1
+        )
+
+    output.write_text(json.dumps([{
+        **normalized[0],
+        "translated_image_caption": [""],
+        "auxiliary_translation": {
+            "image_caption": [{
+                "translation_status": "success",
+                "translation_error": None,
+            }]
+        },
+    }]), encoding="utf-8")
+    with pytest.raises(TranslationContentError, match="有效译文"):
+        translate_content_list_file(
+            source, output, RecordingTranslator([]), concurrency=1
+        )
+
+
+def test_pending_auxiliary_item_still_raises_after_translation(tmp_path, monkeypatch):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "image", "image_caption": ["caption"]}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "pdf_trans.translation._collect_auxiliary_translation_work",
+        lambda items: [],
+    )
+
+    with pytest.raises(TranslationContentError, match="pending 附属文本"):
+        translate_content_list_file(
+            source, output, RecordingTranslator([]), concurrency=1
+        )
