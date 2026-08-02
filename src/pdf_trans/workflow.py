@@ -31,6 +31,7 @@ from pdf_trans.renderer import render_content_list_file
 from pdf_trans.translation import (
     TextTranslator,
     TranslationStats,
+    format_translation_stats,
     translate_content_list_file,
 )
 from pdf_trans.translation_client import (
@@ -177,8 +178,7 @@ def process_translation_file(
                 concurrency=concurrency,
             )
             translation_stage.set_result(
-                f"success {result.stats.success_count} 段，"
-                f"failed {result.stats.failed_count} 段"
+                format_translation_stats(result.stats)
             )
         workflow_stage.set_result(f"输出翻译文件 {result.translated_path}")
         return result
@@ -351,8 +351,7 @@ def _process_pdf_stages(
             concurrency=translation_concurrency,
         )
         stage.set_result(
-            f"success {translation_result.stats.success_count} 段，"
-            f"failed {translation_result.stats.failed_count} 段"
+            format_translation_stats(translation_result.stats)
         )
 
     markdown_path = output_path.parent / "rendered.md"

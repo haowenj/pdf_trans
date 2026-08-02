@@ -16,7 +16,11 @@ from pdf_trans.errors import (
 from pdf_trans.formula_audit import audit_content_list_file
 from pdf_trans.formula_validation import ValidationResult
 from pdf_trans.translation import TranslationStats
-from pdf_trans.workflow import process_pdf, process_translation_file
+from pdf_trans.workflow import (
+    TranslationFileResult,
+    process_pdf,
+    process_translation_file,
+)
 
 
 class FakeMinerUClient:
@@ -93,7 +97,9 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     assert result.translated_path == (
         tmp_path / "data/paper/hybrid_auto/translated_content_list.json"
     ).resolve()
-    assert result.translation_stats == TranslationStats(1, 1, 0, 1, 0, 0)
+    assert result.translation_stats == TranslationStats(
+        1, 1, 0, 1, 0, 0, text_model_call_count=1
+    )
     assert result.content_stats == ContentStats(
         type_counts={"chart": 1, "text": 1},
         text_level_count=0,
@@ -550,7 +556,55 @@ def test_process_translation_file_runs_resumeable_translation(tmp_path):
     assert result.translated_path == (
         tmp_path / "translated_content_list.json"
     ).resolve()
-    assert result.stats == TranslationStats(1, 1, 0, 1, 0, 0)
+    assert result.stats == TranslationStats(
+        1, 1, 0, 1, 0, 0, text_model_call_count=1
+    )
+
+
+def test_process_translation_file_logs_body_and_table_statistics(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    normalized = tmp_path / "normalized_content_list.json"
+    translated = tmp_path / "translated_content_list.json"
+    normalized.write_text("[]", encoding="utf-8")
+    stats = TranslationStats(
+        1,
+        4,
+        1,
+        1,
+        0,
+        0,
+        table_count=3,
+        table_success_count=2,
+        table_failed_count=1,
+        table_partial_success_count=1,
+        table_translation_success_cell_count=5,
+        table_translation_fallback_cell_count=2,
+        skipped_table_success_count=1,
+        text_model_call_count=1,
+        table_model_call_count=3,
+    )
+    monkeypatch.setattr(
+        "pdf_trans.workflow._run_translation",
+        lambda path, **kwargs: TranslationFileResult(
+            normalized_path=path,
+            translated_path=translated,
+            stats=stats,
+        ),
+    )
+    caplog.set_level(logging.INFO)
+
+    process_translation_file(normalized)
+
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "正文翻译：" in messages
+    assert "表格翻译：" in messages
+    assert "其中部分成功：1" in messages
+    assert "成功单元格：5" in messages
+    assert "回退原文单元格：2" in messages
+    assert "模型调用总数：4（正文 1，表格 3）" in messages
 
 
 def test_process_translation_file_requires_exact_normalized_filename(tmp_path):
@@ -669,4 +723,6 @@ def test_process_pdf_logs_stage_actions_counts_and_cross_page_merge(
         assert f"{stage}完成" in messages
     assert "清洗数据完成：输入 3 项，过滤 1 项，保留 2 项" in messages
     assert "被分页分裂，将合并为一个段落" in messages
+    assert "正文翻译：" in messages
+    assert "表格翻译：" in messages
     assert "耗时 " in messages

@@ -14,6 +14,7 @@ from pdf_trans.formula_audit import (
     read_formula_audit_file,
 )
 from pdf_trans.renderer import render_content_list_file
+from pdf_trans.translation import format_translation_stats
 from pdf_trans.workflow import (
     TranslationFileResult,
     WorkflowResult,
@@ -108,8 +109,8 @@ class TaskRunner:
                 formula_audit=audit_report,
             )
             summary = (
-                f"断点续传完成：成功 {result.stats.success_count} 段，"
-                f"失败 {result.stats.failed_count} 段"
+                "断点续传完成：\n"
+                + format_translation_stats(result.stats)
             )
             return self._artifacts(normalized, markdown, True, summary)
 
@@ -127,9 +128,8 @@ class TaskRunner:
         summary = (
             f"完整工作流完成：输入 {result.before_count} 项，"
             f"过滤 {result.filtered_count} 项，"
-            f"跨页候选 {result.candidate_count} 个，"
-            f"翻译成功 {result.translation_stats.success_count} 段，"
-            f"失败 {result.translation_stats.failed_count} 段"
+            f"跨页候选 {result.candidate_count} 个\n"
+            + format_translation_stats(result.translation_stats)
         )
         return self._artifacts(
             result.normalized_path,

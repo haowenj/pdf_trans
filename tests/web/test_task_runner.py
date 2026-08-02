@@ -5,6 +5,7 @@ import pytest
 
 from pdf_trans.errors import FormulaAuditError
 from pdf_trans.formula_audit import LegacyFormulaAuditError
+from pdf_trans.translation import TranslationStats
 from pdf_trans.web.config import WebSettings
 from pdf_trans.web.repository import TaskView
 from pdf_trans.web.task_runner import (
@@ -79,7 +80,23 @@ def fake_translation_result(path):
     return SimpleNamespace(
         normalized_path=path,
         translated_path=path.with_name("translated_content_list.json"),
-        stats=SimpleNamespace(success_count=3, failed_count=0),
+        stats=TranslationStats(
+            1,
+            4,
+            1,
+            1,
+            0,
+            0,
+            table_count=2,
+            table_success_count=1,
+            table_failed_count=1,
+            table_partial_success_count=1,
+            table_translation_success_cell_count=3,
+            table_translation_fallback_cell_count=1,
+            skipped_table_success_count=1,
+            text_model_call_count=2,
+            table_model_call_count=2,
+        ),
     )
 
 
@@ -115,9 +132,7 @@ def test_runner_starts_full_workflow_when_no_checkpoint_exists(tmp_path):
             before_count=1,
             filtered_count=0,
             candidate_count=0,
-            translation_stats=SimpleNamespace(
-                success_count=1, failed_count=0
-            ),
+            translation_stats=fake_translation_result(normalized).stats,
         )
 
     runner = TaskRunner(
@@ -131,6 +146,12 @@ def test_runner_starts_full_workflow_when_no_checkpoint_exists(tmp_path):
     assert received["mineru_server_url"] == "http://gpustack:8000"
     assert result.normalized_path.endswith("normalized_content_list.json")
     assert result.markdown_path.endswith("rendered.md")
+    assert "正文翻译：" in result.summary
+    assert "表格翻译：" in result.summary
+    assert "其中部分成功：1" in result.summary
+    assert "成功单元格：3" in result.summary
+    assert "回退原文单元格：1" in result.summary
+    assert "模型调用总数：4（正文 2，表格 2）" in result.summary
 
 
 def test_runner_resumes_translation_and_renders_markdown(tmp_path):
@@ -147,7 +168,7 @@ def test_runner_resumes_translation_and_renders_markdown(tmp_path):
         return SimpleNamespace(
             normalized_path=path,
             translated_path=translated,
-            stats=SimpleNamespace(success_count=3, failed_count=0),
+            stats=fake_translation_result(path).stats,
         )
 
     def render(source, output, *, formula_audit=None):
@@ -164,6 +185,12 @@ def test_runner_resumes_translation_and_renders_markdown(tmp_path):
     assert calls[1][2] == normalized.with_name("rendered.md")
     assert calls[1][3] is not None
     assert result.resumed is True
+    assert "正文翻译：" in result.summary
+    assert "表格翻译：" in result.summary
+    assert "其中部分成功：1" in result.summary
+    assert "成功单元格：3" in result.summary
+    assert "回退原文单元格：1" in result.summary
+    assert "模型调用总数：4（正文 2，表格 2）" in result.summary
 
 
 def test_runner_reuses_valid_formula_audit_before_resume(tmp_path):
