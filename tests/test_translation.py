@@ -216,7 +216,10 @@ def test_resume_skips_success_and_retries_pending_and_failed(tmp_path):
     normalized = [
         {"type": "text", "text": "A", "extra": "fresh"},
         {"type": "text", "text": "B"},
-        {"type": "table", "rows": [[1]]},
+        {
+            "type": "table",
+            "table_body": "<table><tr><td>broken</tr></table>",
+        },
         {"type": "text", "text": "C"},
     ]
     source.write_text(json.dumps(normalized), encoding="utf-8")
@@ -844,6 +847,73 @@ def test_invalid_table_html_falls_back_without_model_call(tmp_path, table_body):
     assert result["table_body"] == table_body
     assert result["translation_status"] == "failed"
     assert "HTML" in result["translation_error"]
+
+
+def test_empty_table_placeholder_is_skipped_without_model_call(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps(
+            [
+                {
+                    "type": "table",
+                    "table_body": None,
+                    "img_path": "",
+                    "table_caption": [],
+                    "table_footnote": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    translator = FakeTranslator([])
+
+    stats = translate_content_list_file(
+        source, output, translator, max_retries=0, concurrency=1
+    )
+
+    result = read_items(output)[0]
+    assert translator.received == []
+    assert result["translation_status"] == "skipped"
+    assert result["translation_error"] == "empty_table_placeholder"
+    assert "translated_table_body" not in result
+    assert stats.table_count == 1
+    assert stats.table_success_count == 0
+    assert stats.table_failed_count == 0
+    assert stats.table_skipped_count == 1
+    assert stats.table_pending_count == 0
+    assert stats.model_call_count == 0
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"img_path": "images/table.png"},
+        {"table_caption": ["Table caption"]},
+        {"table_footnote": ["Table footnote"]},
+    ],
+)
+def test_table_without_body_but_with_metadata_is_not_skipped(
+    tmp_path, metadata
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "table", "table_body": None, **metadata}]),
+        encoding="utf-8",
+    )
+    translator = FakeTranslator(["译文"])
+
+    stats = translate_content_list_file(
+        source, output, translator, max_retries=0, concurrency=1
+    )
+
+    result = read_items(output)[0]
+    assert result["translation_status"] == "failed"
+    assert result["translation_error"] == "HTML 必须是非空字符串"
+    assert stats.table_count == 1
+    assert stats.table_failed_count == 1
+    assert stats.table_skipped_count == 0
 
 
 def test_resume_skips_successful_table_by_original_table_body(tmp_path):

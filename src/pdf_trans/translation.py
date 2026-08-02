@@ -94,6 +94,7 @@ class TranslationStats:
     auxiliary_failed_count: int = 0
     auxiliary_pending_count: int = 0
     auxiliary_model_call_count: int = 0
+    table_skipped_count: int = 0
 
 
 def format_translation_stats(stats: TranslationStats) -> str:
@@ -116,6 +117,7 @@ def format_translation_stats(stats: TranslationStats) -> str:
             f"  成功：{stats.table_success_count}",
             f"  其中部分成功：{stats.table_partial_success_count}",
             f"  失败：{stats.table_failed_count}",
+            f"  跳过：{stats.table_skipped_count}",
             f"  pending：{stats.table_pending_count}",
             "  成功单元格："
             f"{stats.table_translation_success_cell_count}",
@@ -148,7 +150,7 @@ class TranslationOutcome:
 class TableTranslationOutcome:
     index: int
     table_number: int
-    status: Literal["success", "failed"]
+    status: Literal["success", "failed", "skipped"]
     translated_table_body: str | None
     error: str | None
     model_call_count: int
@@ -242,6 +244,28 @@ def _auxiliary_specs(item: dict[str, Any]) -> tuple[tuple[str, str], ...]:
 
 def _is_non_blank_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_empty_table_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple)):
+        return not value or all(_is_empty_table_value(item) for item in value)
+    return False
+
+
+def _is_empty_table_placeholder(item: dict[str, Any]) -> bool:
+    return all(
+        _is_empty_table_value(item.get(field))
+        for field in (
+            "table_body",
+            "img_path",
+            "table_caption",
+            "table_footnote",
+        )
+    )
 
 
 def _invalid_auxiliary_entry_state() -> dict[str, Any]:
@@ -476,6 +500,20 @@ def _restore_table_state(
         item["translation_status"] = "success"
         item.pop("translation_error", None)
         _restore_table_metadata(item, old, index)
+        return
+    if status == "skipped":
+        if old.get("translated_table_body") is not None:
+            raise TranslationContentError(
+                f"断点文件第 {index} 个 skipped 表格不能包含译文"
+            )
+        if old.get("translation_error") != "empty_table_placeholder":
+            raise TranslationContentError(
+                f"断点文件第 {index} 个 skipped 表格原因无效"
+            )
+        item.pop("translated_table_body", None)
+        _clear_table_metadata(item)
+        item["translation_status"] = "skipped"
+        item["translation_error"] = "empty_table_placeholder"
         return
     if status in {"pending", "failed"}:
         item.pop("translated_table_body", None)
@@ -723,11 +761,30 @@ def _failed_table_outcome(
 def _translate_table_one(
     index: int,
     table_number: int,
-    table_body: Any,
+    item: dict[str, Any],
     translator: TextTranslator,
     max_retries: int,
 ) -> TableTranslationOutcome:
     started = time.perf_counter()
+    if _is_empty_table_placeholder(item):
+        elapsed = time.perf_counter() - started
+        LOGGER.info(
+            "第 %d 张表翻译完成：skipped，耗时 %.2f 秒，原因：%s",
+            table_number,
+            elapsed,
+            "empty_table_placeholder",
+        )
+        return TableTranslationOutcome(
+            index=index,
+            table_number=table_number,
+            status="skipped",
+            translated_table_body=None,
+            error="empty_table_placeholder",
+            model_call_count=0,
+            elapsed_seconds=elapsed,
+        )
+
+    table_body = item.get("table_body")
     try:
         prepared = prepare_table_translation(table_body)
     except Exception as exc:
@@ -924,6 +981,12 @@ def _apply_table_outcome(
             for fallback in outcome.fallbacks
         ]
         return
+    if outcome.status == "skipped":
+        item.pop("translated_table_body", None)
+        _clear_table_metadata(item)
+        item["translation_status"] = "skipped"
+        item["translation_error"] = outcome.error
+        return
     item.pop("translated_table_body", None)
     _clear_table_metadata(item)
     item["translation_status"] = "failed"
@@ -972,16 +1035,16 @@ def _collect_translation_work(
 
 def _collect_table_translation_work(
     items: list[dict[str, Any]],
-) -> list[tuple[int, int, Any]]:
-    work: list[tuple[int, int, Any]] = []
+) -> list[tuple[int, int, dict[str, Any]]]:
+    work: list[tuple[int, int, dict[str, Any]]] = []
     table_number = 0
     for index, item in enumerate(items):
         if item.get("type") != "table":
             continue
         table_number += 1
-        if item.get("translation_status") == "success":
+        if item.get("translation_status") in {"success", "skipped"}:
             continue
-        work.append((index, table_number, item.get("table_body")))
+        work.append((index, table_number, item))
     return work
 
 
@@ -1112,11 +1175,11 @@ def translate_content_list_file(
             _translate_table_one,
             index,
             table_number,
-            table_body,
+            item,
             translator,
             max_retries,
         )
-        for index, table_number, table_body in table_work
+        for index, table_number, item in table_work
     )
     futures.extend(
         executor.submit(
@@ -1210,6 +1273,7 @@ def translate_content_list_file(
         table_success_count=table_counts.get("success", 0),
         table_failed_count=table_counts.get("failed", 0),
         table_pending_count=table_pending,
+        table_skipped_count=table_counts.get("skipped", 0),
         table_partial_success_count=sum(
             item.get("table_translation_partial") is True
             for item in successful_tables
