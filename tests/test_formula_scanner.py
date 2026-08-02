@@ -86,6 +86,68 @@ def test_public_scanner_returns_all_supported_formula_spans():
 @pytest.mark.parametrize(
     "source",
     [
+        "$5",
+        "$10.50",
+        "$5 million",
+        "$10 billion",
+        "US$5",
+        "USD $5",
+        "US$5 and US$10",
+        "USD $5 and USD $10",
+        "from $5 million to $10 million",
+        "$5–$10",
+        "$5-$10",
+        "price is $5 and $10",
+    ],
+)
+def test_public_scanner_leaves_ordinary_dollar_amounts_as_text(source):
+    assert scan_formula_spans(source) == ()
+
+
+def test_public_scanner_ignores_amounts_but_keeps_real_formulas():
+    source = (
+        "from $5 million to $10 billion; "
+        r"$x$ $C_7$ $x + y = 10$ "
+        r"$\mathrm{C}_{8}$ $x < y >$ $$x^2+y^2$$"
+    )
+
+    assert [span.raw_formula for span in scan_formula_spans(source)] == [
+        "$x$",
+        "$C_7$",
+        "$x + y = 10$",
+        r"$\mathrm{C}_{8}$",
+        "$x < y >$",
+        "$$x^2+y^2$$",
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "<table><tr><td>$5</td><td>$10</td></tr></table>",
+        "<span>$x</span><span>y$</span>",
+    ],
+)
+def test_public_scanner_does_not_pair_dollars_across_html_tags(source):
+    assert scan_formula_spans(source) == ()
+
+
+def test_table_scanner_does_not_pair_amounts_from_different_cells():
+    items = [
+        {
+            "type": "table",
+            "table_body": (
+                "<table><tr><td>$5</td><td>$10</td></tr></table>"
+            ),
+        }
+    ]
+
+    assert scan_content_list(items) == ()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
         r"\$x\$",
         r"\$\$x\$\$",
         r"\\(x\\)",

@@ -36,6 +36,17 @@ _VOID_TAGS = frozenset(
         "wbr",
     }
 )
+_HTML_BOUNDARY_TAG_RE = re.compile(
+    r"</?([A-Za-z][A-Za-z0-9:-]*)\b[^>]*>",
+    re.DOTALL,
+)
+_NUMERIC_DOLLAR_PREFIX_RE = re.compile(
+    r"\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+    r"(?=[^A-Za-z0-9_]|$)"
+)
+_CLEAR_NUMERIC_MATH_RE = re.compile(
+    r"(?:\\|[{}_^=+*/()<>]|\d\s*[-−]\s*\d)"
+)
 
 
 @dataclass(frozen=True)
@@ -114,6 +125,31 @@ def _find_closing(
     return None
 
 
+def _contains_html_boundary(
+    source: str,
+    start: int,
+    end: int,
+) -> bool:
+    """Detect structural tags, while preserving void-tag formula text."""
+    return any(
+        match.group(1).lower() not in _VOID_TAGS
+        for match in _HTML_BOUNDARY_TAG_RE.finditer(
+            source,
+            start,
+            end,
+        )
+    )
+
+
+def _looks_like_ambiguous_numeric_dollar(
+    content: str,
+) -> bool:
+    """Reject numeric-leading dollar text unless it has clear TeX syntax."""
+    if _NUMERIC_DOLLAR_PREFIX_RE.match(content) is None:
+        return False
+    return _CLEAR_NUMERIC_MATH_RE.search(content) is None
+
+
 def scan_formula_spans(source: str) -> tuple[FormulaSpan, ...]:
     spans: list[FormulaSpan] = []
     position = 0
@@ -134,6 +170,14 @@ def scan_formula_spans(source: str) -> tuple[FormulaSpan, ...]:
             if end is None:
                 continue
             raw_end = end + len(closing)
+            if opening == "$":
+                content = source[position + 1 : end]
+                if _contains_html_boundary(
+                    source,
+                    position + 1,
+                    end,
+                ) or _looks_like_ambiguous_numeric_dollar(content):
+                    continue
             spans.append(
                 FormulaSpan(
                     raw_formula=source[position:raw_end],

@@ -49,6 +49,18 @@ def test_protects_multiline_block_formula_and_preserves_every_character():
     assert restored == f"之前\n{formula}\n之后"
 
 
+def test_body_protection_leaves_amounts_and_protects_a_neighboring_formula():
+    source = r"Cost rose from $5 million to $10 million; formula $x$."
+    context = FormulaProtectionContext(nonce="0123456789abcdef")
+
+    protected = context.protect(source)
+
+    assert protected.model_text.count("$5 million") == 1
+    assert protected.model_text.count("$10 million") == 1
+    assert len(PLACEHOLDER_RE.findall(protected.model_text)) == 1
+    assert context.restore(protected.model_text, protected) == source
+
+
 def test_protects_and_restores_all_supported_formula_boundaries_exactly():
     source = r"Inline $a_b$, block $$c_d$$, paren \(e_f\), bracket \[g_h\]."
     context = FormulaProtectionContext(nonce="0123456789abcdef")

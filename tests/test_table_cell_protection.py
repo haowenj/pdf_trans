@@ -66,6 +66,16 @@ def test_protects_and_restores_all_supported_cell_formula_boundaries_exactly():
     ) == r"甲 $a$ 乙 $$b$$ 丙 \(c\) 丁 \[d\]"
 
 
+def test_cell_protection_leaves_amounts_and_protects_a_neighboring_formula():
+    source = r"Cost rose from $5 million to $10 million; formula $x$."
+
+    protected = protect_cell_text(source)
+
+    assert protected.model_text.count("$5 million") == 1
+    assert protected.model_text.count("$10 million") == 1
+    assert [value.original for value in protected.formula_markers] == ["$x$"]
+
+
 @pytest.mark.parametrize(
     ("translated", "message"),
     [

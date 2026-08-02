@@ -1,4 +1,4 @@
-from pdf_trans.web.markdown import render_safe_markdown
+from pdf_trans.web.markdown import _protect_math, render_safe_markdown
 
 
 def test_markdown_keeps_tables_spans_and_rewrites_relative_images() -> None:
@@ -76,6 +76,20 @@ def test_markdown_preserves_all_supported_math_delimiters() -> None:
 
     assert source in rendered
     assert "<em>" not in rendered
+
+
+def test_markdown_leaves_amounts_unprotected_and_protects_real_formula():
+    source = r"Cost rose from $5 million to $10 million; formula $x$."
+
+    protected, records = _protect_math(source)
+    rendered = render_safe_markdown(
+        source,
+        asset_base_url="/tasks/a/assets",
+    )
+
+    assert [record.source for record in records] == ["$x$"]
+    assert "$5 million to $10 million" in protected
+    assert source in rendered
 
 
 def test_markdown_escapes_html_inside_protected_formula() -> None:
