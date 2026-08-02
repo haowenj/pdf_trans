@@ -24,6 +24,35 @@ def _string_list(value: Any) -> list[str]:
     return [item for item in value if _is_non_blank_string(item)]
 
 
+def _render_auxiliary_list(
+    item: dict[str, Any],
+    source_field: str,
+    translated_field: str,
+) -> list[str]:
+    raw_values = item.get(source_field)
+    if not isinstance(raw_values, list):
+        return []
+    translated_values = item.get(translated_field)
+    state = item.get("auxiliary_translation")
+    entries = state.get(source_field) if isinstance(state, dict) else None
+    rendered: list[str] = []
+    for index, raw_value in enumerate(raw_values):
+        value = raw_value
+        if (
+            isinstance(translated_values, list)
+            and isinstance(entries, list)
+            and index < len(translated_values)
+            and index < len(entries)
+            and isinstance(entries[index], dict)
+            and entries[index].get("translation_status") == "success"
+            and _is_non_blank_string(translated_values[index])
+        ):
+            value = translated_values[index]
+        if _is_non_blank_string(value):
+            rendered.append(value)
+    return rendered
+
+
 def _render_item(
     item: Any,
     replacements: FormulaReplacement,
@@ -58,12 +87,28 @@ def _render_item(
         img_path = item.get("img_path")
         if _is_non_blank_string(img_path):
             parts.append(f"![]({img_path})")
-        parts.extend(_string_list(item.get(f"{item_type}_caption")))
-        parts.extend(_string_list(item.get(f"{item_type}_footnote")))
+        parts.extend(
+            _render_auxiliary_list(
+                item,
+                f"{item_type}_caption",
+                f"translated_{item_type}_caption",
+            )
+        )
+        parts.extend(
+            _render_auxiliary_list(
+                item,
+                f"{item_type}_footnote",
+                f"translated_{item_type}_footnote",
+            )
+        )
         return parts
 
     if item_type == "table":
-        parts = _string_list(item.get("table_caption"))
+        parts = _render_auxiliary_list(
+            item,
+            "table_caption",
+            "translated_table_caption",
+        )
         table_body = item.get("table_body")
         translated_table_body = item.get("translated_table_body")
         if (
@@ -78,7 +123,13 @@ def _render_item(
                     replacements,
                 )
             parts.append(table_body)
-        parts.extend(_string_list(item.get("table_footnote")))
+        parts.extend(
+            _render_auxiliary_list(
+                item,
+                "table_footnote",
+                "translated_table_footnote",
+            )
+        )
         return parts
 
     if item_type == "equation":

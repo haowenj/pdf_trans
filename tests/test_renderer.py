@@ -221,6 +221,75 @@ def test_render_items_falls_back_when_successful_table_translation_is_blank():
     )
 
 
+def test_render_items_selects_auxiliary_translation_per_position_and_keeps_order():
+    items = [
+        {
+            "type": "table",
+            "table_caption": ["原表题一", "原表题二"],
+            "translated_table_caption": ["译表题一", None],
+            "table_footnote": ["原表注"],
+            "translated_table_footnote": ["译表注"],
+            "auxiliary_translation": {
+                "table_caption": [
+                    {"translation_status": "success", "translation_error": None},
+                    {"translation_status": "failed", "translation_error": "timeout"},
+                ],
+                "table_footnote": [
+                    {"translation_status": "success", "translation_error": None},
+                ],
+            },
+            "table_body": "<table><tr><td>body</td></tr></table>",
+        },
+        {
+            "type": "image",
+            "img_path": "images/a.png",
+            "image_caption": ["原图题一", "原图题二"],
+            "translated_image_caption": ["译图题一", None],
+            "image_footnote": ["原图注"],
+            "translated_image_footnote": [None],
+            "auxiliary_translation": {
+                "image_caption": [
+                    {"translation_status": "success", "translation_error": None},
+                    {"translation_status": "pending", "translation_error": None},
+                ],
+                "image_footnote": [
+                    {"translation_status": "failed", "translation_error": "error"},
+                ],
+            },
+        },
+        {
+            "type": "chart",
+            "img_path": "images/chart.png",
+            "chart_caption": ["原图表题"],
+            "translated_chart_caption": ["译图表题"],
+            "chart_footnote": ["原图表注"],
+            "translated_chart_footnote": ["译图表注"],
+            "auxiliary_translation": {
+                "chart_caption": [
+                    {"translation_status": "success", "translation_error": None},
+                ],
+                "chart_footnote": [
+                    {"translation_status": "success", "translation_error": None},
+                ],
+            },
+        },
+    ]
+
+    assert render_items(items) == (
+        "译表题一\n\n"
+        "原表题二\n\n"
+        "<table><tr><td>body</td></tr></table>\n\n"
+        "译表注\n\n"
+        "![](images/a.png)\n\n"
+        "译图题一\n\n"
+        "原图题二\n\n"
+        "原图注\n\n"
+        "![](images/chart.png)\n\n"
+        "译图表题\n\n"
+        "译图表注\n"
+    )
+
+
 def test_render_items_applies_only_accepted_formula_replacements():
     report = SimpleNamespace(
         accepted_replacements={
