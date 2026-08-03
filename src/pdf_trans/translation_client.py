@@ -14,7 +14,7 @@ TRANSLATION_SYSTEM_PROMPT = """你是一名化工工程学术论文翻译助手�
 - 不总结、不改写、不补充；
 - 保留引用编号，例如 [38]、[39–41]；
 - 保留 LaTeX 公式及 $...$ 内容；
-- 原文公式会被替换为占位符；占位符必须逐字保留，不得翻译、删除、复制或调换顺序；
+- 原文公式会被替换为占位符；占位符必须逐字保留，不得翻译、删除、复制或篡改；每个占位符 ID 只能出现一次，可根据中文语序调整位置；
 - 保留数值、单位和百分数；
 - 保留设备编号，例如 C-1、E-1、D-1、SS1；
 - 术语翻译应符合化工论文表达；
@@ -186,10 +186,29 @@ class OpenAICompatibleTranslator:
         *,
         response_format: dict[str, Any] | None = None,
     ) -> str:
+        return self._translate(text, response_format=response_format)
+
+    def translate_with_instruction(
+        self,
+        text: str,
+        instruction: str,
+    ) -> str:
+        return self._translate(text, instruction=instruction)
+
+    def _translate(
+        self,
+        text: str,
+        *,
+        response_format: dict[str, Any] | None = None,
+        instruction: str | None = None,
+    ) -> str:
+        system_prompt = TRANSLATION_SYSTEM_PROMPT
+        if instruction:
+            system_prompt = f"{system_prompt}\n\n{instruction}"
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": TRANSLATION_SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": text},
             ],
         }

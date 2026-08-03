@@ -290,6 +290,33 @@ def test_translate_sends_compatible_request_and_returns_only_content():
         assert required in TRANSLATION_SYSTEM_PROMPT
 
 
+def test_translate_with_instruction_adds_retry_instruction_to_system_prompt():
+    seen = {}
+
+    def handler(request):
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "译文"}}]},
+        )
+
+    translator = OpenAICompatibleTranslator(
+        base_url="http://translate.example/v1",
+        api_key="secret",
+        model="paper-model",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert translator.translate_with_instruction("Source", "重试要求") == "译文"
+    assert seen["payload"]["messages"] == [
+        {
+            "role": "system",
+            "content": TRANSLATION_SYSTEM_PROMPT + "\n\n重试要求",
+        },
+        {"role": "user", "content": "Source"},
+    ]
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 def test_translate_sends_configured_vllm_thinking_switch(enabled):
     seen = {}

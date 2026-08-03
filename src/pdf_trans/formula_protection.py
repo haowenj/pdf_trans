@@ -12,10 +12,36 @@ _SENTINEL_MARKER = "PDFTRANS_FORMULA"
 _PLACEHOLDER_RE = re.compile(
     r"⟪PDFTRANS_FORMULA:([0-9a-f]{16}):(\d{4}):([0-9a-f]{64})⟫"
 )
+_PLACEHOLDER_CANDIDATE_RE = re.compile(
+    r"⟪PDFTRANS_FORMULA:[^⟫]*⟫"
+)
 
 
 class FormulaProtectionError(ValueError):
     """A model response cannot be safely restored to source formulas."""
+
+
+class FormulaPlaceholderError(FormulaProtectionError):
+    """A model response failed formula placeholder validation."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        expected_placeholders: tuple[str, ...] = (),
+        actual_placeholders: tuple[str, ...] = (),
+        missing_placeholders: tuple[str, ...] = (),
+        duplicate_placeholders: tuple[str, ...] = (),
+        unknown_placeholders: tuple[str, ...] = (),
+        tampered_placeholders: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.expected_placeholders = expected_placeholders
+        self.actual_placeholders = actual_placeholders
+        self.missing_placeholders = missing_placeholders
+        self.duplicate_placeholders = duplicate_placeholders
+        self.unknown_placeholders = unknown_placeholders
+        self.tampered_placeholders = tampered_placeholders
 
 
 @dataclass(frozen=True)
@@ -34,6 +60,10 @@ class _FormulaRecord:
 
 def _extract_formulas(text: str) -> tuple[str, ...]:
     return tuple(span.raw_formula for span in scan_formula_spans(text))
+
+
+def extract_formula_placeholder_ids(text: str) -> tuple[str, ...]:
+    return tuple(match.group(2) for match in _PLACEHOLDER_RE.finditer(text))
 
 
 class FormulaProtectionContext:
@@ -80,23 +110,70 @@ class FormulaProtectionContext:
         matches = list(_PLACEHOLDER_RE.finditer(translated_text))
         expected_ids = list(protected.formula_ids)
         actual_ids = [match.group(2) for match in matches]
+        expected_placeholders = tuple(
+            self._records[formula_id].placeholder
+            for formula_id in expected_ids
+        )
+        actual_placeholders = tuple(
+            _PLACEHOLDER_CANDIDATE_RE.findall(translated_text)
+        )
+        candidate_ids = {
+            token: match.group(2)
+            for token in actual_placeholders
+            if (match := _PLACEHOLDER_RE.fullmatch(token)) is not None
+        }
+
+        def raise_placeholder_error(
+            message: str,
+            *,
+            tampered: tuple[str, ...] = (),
+        ) -> None:
+            raise FormulaPlaceholderError(
+                message,
+                expected_placeholders=expected_placeholders,
+                actual_placeholders=actual_placeholders,
+                missing_placeholders=tuple(
+                    self._records[formula_id].placeholder
+                    for formula_id in expected_ids
+                    if formula_id not in actual_ids
+                ),
+                duplicate_placeholders=tuple(
+                    sorted(
+                        {
+                            token
+                            for token, formula_id in candidate_ids.items()
+                            if actual_ids.count(formula_id) > 1
+                        }
+                    )
+                ),
+                unknown_placeholders=tuple(
+                    token
+                    for token, formula_id in candidate_ids.items()
+                    if formula_id not in expected_ids
+                ),
+                tampered_placeholders=tampered,
+            )
 
         if translated_text.count(_SENTINEL_MARKER) != len(matches):
-            raise FormulaProtectionError("公式占位符被篡改")
+            raise_placeholder_error(
+                "公式占位符被篡改",
+                tampered=actual_placeholders,
+            )
         duplicates = sorted(
             value for value in set(actual_ids) if actual_ids.count(value) > 1
         )
-        if duplicates:
-            raise FormulaProtectionError("公式占位符存在重复 ID")
         unknown = sorted(set(actual_ids) - set(expected_ids))
-        if unknown:
-            raise FormulaProtectionError("公式占位符存在新增 ID")
         missing = sorted(set(expected_ids) - set(actual_ids))
+        if duplicates:
+            raise_placeholder_error("公式占位符存在重复 ID")
+        if unknown:
+            raise_placeholder_error("公式占位符存在新增 ID")
         if missing:
-            raise FormulaProtectionError("公式占位符存在缺失 ID")
+            raise_placeholder_error("公式占位符存在缺失 ID")
         if len(matches) != len(expected_ids):
-            raise FormulaProtectionError("公式占位符数量不一致")
+            raise_placeholder_error("公式占位符数量不一致")
 
+        tampered: list[str] = []
         for match in matches:
             record = self._records[match.group(2)]
             if (
@@ -104,11 +181,14 @@ class FormulaProtectionContext:
                 or match.group(3) != record.digest
                 or match.group(0) != record.placeholder
             ):
-                raise FormulaProtectionError("公式占位符被篡改")
-        if actual_ids != expected_ids:
-            raise FormulaProtectionError("公式占位符顺序变化")
+                tampered.append(match.group(0))
+        if tampered:
+            raise_placeholder_error(
+                "公式占位符被篡改",
+                tampered=tuple(tampered),
+            )
         if _extract_formulas(translated_text):
-            raise FormulaProtectionError("模型返回中存在新增公式")
+            raise_placeholder_error("模型返回中存在新增公式")
 
         records_by_placeholder = {
             self._records[formula_id].placeholder: self._records[formula_id]
@@ -124,11 +204,14 @@ class FormulaProtectionContext:
 
         restored = _PLACEHOLDER_RE.sub(replace, translated_text)
         restored_formulas = _extract_formulas(restored)
-        originals = tuple(
-            self._records[formula_id].original for formula_id in expected_ids
+        expected_restored_formulas = tuple(
+            self._records[formula_id].original for formula_id in actual_ids
         )
-        if restored_formulas != originals:
-            raise FormulaProtectionError("恢复后的公式内容不一致")
+        if restored_formulas != expected_restored_formulas:
+            raise_placeholder_error(
+                "恢复后的公式内容不一致",
+                tampered=actual_placeholders,
+            )
         if _SENTINEL_MARKER in restored:
-            raise FormulaProtectionError("恢复后仍存在公式保护哨兵")
+            raise_placeholder_error("恢复后仍存在公式保护哨兵")
         return restored

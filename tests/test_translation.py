@@ -6,6 +6,7 @@ import threading
 import time
 
 import pytest
+import pdf_trans.translation as translation_module
 
 from pdf_trans.errors import TranslationContentError
 from pdf_trans.table_translation import (
@@ -176,6 +177,192 @@ def test_placeholder_validation_exhaustion_never_writes_success(tmp_path):
     assert stats == TranslationStats(
         1, 2, 0, 0, 1, 0, text_model_call_count=2
     )
+
+
+class FormulaFailureThenSplitTranslator:
+    def __init__(self, mutation, *, fail_second_segment=False):
+        self.mutation = mutation
+        self.fail_second_segment = fail_second_segment
+        self.received = []
+
+    def translate(self, text, *, response_format=None):
+        assert response_format is None
+        self.received.append(text)
+        if len(self.received) == 1:
+            return self.mutation(text)
+        if self.fail_second_segment and "Fifth sentence" in text:
+            tokens = FORMULA_TOKEN_RE.findall(text)
+            return text.replace(tokens[-1], "", 1)
+        return (
+            text.replace("First sentence", "第一句")
+            .replace("Second sentence", "第二句")
+            .replace("Third sentence", "第三句")
+            .replace("Fourth sentence", "第四句")
+            .replace("Fifth sentence", "第五句")
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda text: text.replace(
+            FORMULA_TOKEN_RE.findall(text)[0], "", 1
+        ),
+        lambda text: text + FORMULA_TOKEN_RE.findall(text)[0],
+        lambda text: text.replace("PDFTRANS_FORMULA", "BROKEN", 1),
+        lambda text: text
+        + "⟪PDFTRANS_FORMULA:0123456789abcdef:9999:"
+        + "0" * 64
+        + "⟫",
+    ],
+    ids=["missing", "duplicate", "tampered", "unknown"],
+)
+def test_formula_validation_failure_falls_back_to_sentence_chunks(
+    tmp_path, caplog, mutation
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source_text = (
+        "First sentence with $x$. Second sentence with $y$. "
+        "Third sentence with $z$. Fourth sentence with $w$. "
+        "Fifth sentence with $v$."
+    )
+    source.write_text(
+        json.dumps([{"type": "text", "text": source_text, "page_idx": 7}]),
+        encoding="utf-8",
+    )
+    translator = FormulaFailureThenSplitTranslator(mutation)
+    caplog.set_level(logging.INFO, logger="pdf_trans.translation")
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=0,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["translation_status"] == "success"
+    assert result["translated_text"] == (
+        "第一句 with $x$. 第二句 with $y$. 第三句 with $z$. "
+        "第四句 with $w$. 第五句 with $v$."
+    )
+    assert len(translator.received) == 3
+    assert all(
+        len(FORMULA_TOKEN_RE.findall(segment))
+        == segment.count("PDFTRANS_FORMULA")
+        for segment in translator.received[1:]
+    )
+    assert stats.success_count == 1
+    assert stats.failed_count == 0
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "page_idx=7" in messages
+    assert "object_index=0" in messages
+    assert "期望占位符=" in messages
+    assert "实际占位符=" in messages
+    assert "处理级别：split_retry" in messages
+
+
+def test_partial_sentence_chunk_failure_only_falls_back_that_chunk(
+    tmp_path, caplog
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source_text = (
+        "First sentence with $x$. Second sentence with $y$. "
+        "Third sentence with $z$. Fourth sentence with $w$. "
+        "Fifth sentence with $v$."
+    )
+    source.write_text(
+        json.dumps([{"type": "text", "text": source_text, "page_idx": 8}]),
+        encoding="utf-8",
+    )
+    translator = FormulaFailureThenSplitTranslator(
+        lambda text: text.replace(FORMULA_TOKEN_RE.findall(text)[0], "", 1),
+        fail_second_segment=True,
+    )
+    caplog.set_level(logging.INFO, logger="pdf_trans.translation")
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=0,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["translation_status"] == "success"
+    assert result["translated_text"] == (
+        "第一句 with $x$. 第二句 with $y$. 第三句 with $z$. "
+        "第四句 with $w$. Fifth sentence with $v$."
+    )
+    assert stats.success_count == 1
+    assert stats.failed_count == 0
+    assert "片段 2 最终回退英文" in "\n".join(
+        record.getMessage() for record in caplog.records
+    )
+
+
+def test_sentence_split_ignores_common_academic_abbreviations():
+    text = (
+        "Smith et al. report the result in Fig. 1. Eq. 2 is used. For example, e.g. "
+        "the value is stable. No. 3 is excluded."
+    )
+
+    pieces = translation_module._split_english_sentences(text)
+
+    assert pieces == [
+        "Smith et al. report the result in Fig. 1.",
+        " Eq. 2 is used.",
+        " For example, e.g. the value is stable.",
+        " No. 3 is excluded.",
+    ]
+
+
+class InstructionAwareFormulaTranslator:
+    def __init__(self):
+        self.received = []
+        self.instructions = []
+
+    def translate(self, text, *, response_format=None):
+        assert response_format is None
+        self.received.append(text)
+        token = FORMULA_TOKEN_RE.findall(text)[0]
+        return text.replace(token, "", 1)
+
+    def translate_with_instruction(self, text, instruction):
+        self.instructions.append(instruction)
+        return text.replace("Temperature", "温度")
+
+
+def test_formula_full_retry_uses_explicit_instruction_before_splitting(
+    tmp_path,
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source.write_text(
+        json.dumps([{"type": "text", "text": "Temperature $x$."}]),
+        encoding="utf-8",
+    )
+    translator = InstructionAwareFormulaTranslator()
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=1,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["translation_status"] == "success"
+    assert result["translated_text"] == "温度 $x$."
+    assert len(translator.received) == 1
+    assert len(translator.instructions) == 1
+    assert "公式占位符" in translator.instructions[0]
+    assert stats.model_call_count == 2
 
 
 def test_retries_failures_and_continues_with_model_call_count(tmp_path):

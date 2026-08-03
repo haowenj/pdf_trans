@@ -4,6 +4,7 @@ import copy
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from collections import Counter
@@ -16,6 +17,9 @@ from pdf_trans.errors import TranslationContentError
 from pdf_trans.formula_protection import (
     FormulaProtectionContext,
     FormulaProtectionError,
+    FormulaPlaceholderError,
+    ProtectedText,
+    extract_formula_placeholder_ids,
 )
 from pdf_trans.logging_utils import logged_stage
 from pdf_trans.table_cell_protection import (
@@ -35,6 +39,30 @@ from pdf_trans.table_translation import (
 from pdf_trans.translation_client import DEFAULT_TRANSLATION_CONCURRENCY
 
 LOGGER = logging.getLogger(__name__)
+FORMULA_SPLIT_MAX_CHARS = 600
+FORMULA_SPLIT_MAX_FORMULAS = 4
+_SENTENCE_CLOSING_CHARS = frozenset(")]}\"'»”’")
+_COMMON_ABBREVIATIONS = frozenset(
+    {
+        "approx",
+        "dr",
+        "e.g",
+        "eq",
+        "eqs",
+        "etc",
+        "fig",
+        "figs",
+        "i.e",
+        "no",
+        "prof",
+        "ref",
+        "refs",
+        "sec",
+        "secs",
+        "vol",
+        "vs",
+    }
+)
 _TABLE_METADATA_FIELDS = (
     "table_translation_partial",
     "table_translation_success_cell_count",
@@ -244,6 +272,319 @@ def _auxiliary_specs(item: dict[str, Any]) -> tuple[tuple[str, str], ...]:
 
 def _is_non_blank_string(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
+
+
+def _is_abbreviation_period(text: str, position: int) -> bool:
+    prefix = text[: position + 1]
+    if re.search(r"(?i)\bet\s+al\.$", prefix):
+        return True
+    match = re.search(
+        r"(?i)(?<![A-Za-z])([A-Za-z](?:[A-Za-z.]*)?)\.$",
+        prefix,
+    )
+    if match is None:
+        return False
+    token = match.group(1).lower()
+    return token in _COMMON_ABBREVIATIONS or re.fullmatch(
+        r"(?:[a-z]\.){2,}[a-z]?",
+        token + ".",
+    ) is not None
+
+
+def _sentence_boundary_end(text: str, position: int) -> int | None:
+    character = text[position]
+    if character == ".":
+        if _is_abbreviation_period(text, position):
+            return None
+        previous = text[position - 1] if position else ""
+        following = text[position + 1] if position + 1 < len(text) else ""
+        if previous.isdigit() and following.isdigit():
+            return None
+    elif character not in "!?":
+        return None
+
+    end = position + 1
+    while end < len(text) and text[end] in _SENTENCE_CLOSING_CHARS:
+        end += 1
+    if end < len(text) and not text[end].isspace():
+        return None
+    return end
+
+
+def _split_english_sentences(text: str) -> list[str]:
+    if not text:
+        return []
+    pieces: list[str] = []
+    start = 0
+    position = 0
+    while position < len(text):
+        boundary = _sentence_boundary_end(text, position)
+        if boundary is not None:
+            pieces.append(text[start:boundary])
+            start = boundary
+            position = boundary
+            continue
+        position += 1
+    if start < len(text):
+        pieces.append(text[start:])
+    return pieces
+
+
+def _pack_formula_sentence_chunks(sentences: list[str]) -> list[str]:
+    chunks: list[str] = []
+    current: list[str] = []
+    current_chars = 0
+    current_formulas = 0
+    for sentence in sentences:
+        formula_count = sentence.count("PDFTRANS_FORMULA")
+        exceeds_chars = (
+            current
+            and current_chars + len(sentence) > FORMULA_SPLIT_MAX_CHARS
+        )
+        exceeds_formulas = (
+            current
+            and current_formulas + formula_count
+            > FORMULA_SPLIT_MAX_FORMULAS
+        )
+        if exceeds_chars or exceeds_formulas:
+            chunks.append("".join(current))
+            current = []
+            current_chars = 0
+            current_formulas = 0
+        current.append(sentence)
+        current_chars += len(sentence)
+        current_formulas += formula_count
+    if current:
+        chunks.append("".join(current))
+    return chunks
+
+
+@dataclass(frozen=True)
+class _FormulaSplitSegment:
+    model_text: str
+    source_text: str
+
+
+def _build_formula_split_segments(
+    context: FormulaProtectionContext,
+    protected: ProtectedText,
+) -> list[_FormulaSplitSegment]:
+    sentences = _split_english_sentences(protected.model_text)
+    chunks = _pack_formula_sentence_chunks(sentences)
+    if len(chunks) <= 1:
+        return []
+
+    segments: list[_FormulaSplitSegment] = []
+    for chunk in chunks:
+        formula_ids = extract_formula_placeholder_ids(chunk)
+        chunk_protected = ProtectedText(
+            model_text=chunk,
+            formula_ids=formula_ids,
+        )
+        source_text = context.restore(chunk, chunk_protected)
+        segments.append(
+            _FormulaSplitSegment(
+                model_text=chunk,
+                source_text=source_text,
+            )
+        )
+    return segments
+
+
+_FORMULA_RETRY_INSTRUCTION = (
+    "公式占位符保护重试要求：只返回译文。每个原文占位符必须逐字保留，"
+    "每个占位符 ID 只能出现一次，不得删除、复制、翻译或篡改；"
+    "占位符可以根据中文语序合理调整位置。"
+)
+
+
+def _call_text_translator(
+    translator: TextTranslator,
+    text: str,
+    *,
+    formula_retry: bool = False,
+) -> str:
+    if formula_retry:
+        translate_with_instruction = getattr(
+            translator,
+            "translate_with_instruction",
+            None,
+        )
+        if callable(translate_with_instruction):
+            return translate_with_instruction(
+                text,
+                _FORMULA_RETRY_INSTRUCTION,
+            )
+    return translator.translate(text)
+
+
+def _log_formula_validation_failure(
+    *,
+    log_label: str,
+    index: int,
+    page_idx: Any,
+    error: FormulaPlaceholderError,
+    phase: str,
+) -> None:
+    LOGGER.warning(
+        "%s公式占位符校验失败：page_idx=%r，object_index=%d，"
+        "处理阶段=%s，期望占位符=%s，实际占位符=%s，缺失=%s，"
+        "重复=%s，未知=%s，篡改=%s，错误=%s",
+        log_label,
+        page_idx,
+        index,
+        phase,
+        error.expected_placeholders,
+        error.actual_placeholders,
+        error.missing_placeholders,
+        error.duplicate_placeholders,
+        error.unknown_placeholders,
+        error.tampered_placeholders,
+        error,
+    )
+
+
+def _split_boundary_whitespace(
+    text: str,
+) -> tuple[str, str, str]:
+    start = len(text) - len(text.lstrip())
+    end = len(text.rstrip())
+    return text[:start], text[start:end], text[end:]
+
+
+def _translate_formula_split(
+    *,
+    index: int,
+    section_number: int,
+    page_idx: Any,
+    log_label: str,
+    context: FormulaProtectionContext,
+    protected: ProtectedText,
+    translator: TextTranslator,
+    started: float,
+    model_call_count: int,
+) -> TranslationOutcome:
+    segments = _build_formula_split_segments(context, protected)
+    if not segments:
+        elapsed = time.perf_counter() - started
+        LOGGER.error(
+            "%s翻译完成：failed，处理级别：split_retry，"
+            "没有可用的完整句子边界，耗时 %.2f 秒，错误：公式占位符校验失败",
+            log_label,
+            elapsed,
+        )
+        return TranslationOutcome(
+            index=index,
+            section_number=section_number,
+            status="failed",
+            translated_text=None,
+            error="公式占位符校验失败，无法按完整句子拆分",
+            model_call_count=model_call_count,
+            elapsed_seconds=elapsed,
+        )
+
+    LOGGER.info(
+        "%s进入拆分重试：%d 个完整句子片段，单片段最多 %d 字符、%d 个公式",
+        log_label,
+        len(segments),
+        FORMULA_SPLIT_MAX_CHARS,
+        FORMULA_SPLIT_MAX_FORMULAS,
+    )
+    translated_segments: list[str] = []
+    fallback_segments: list[int] = []
+    for segment_number, segment in enumerate(segments, 1):
+        leading, model_body, trailing = _split_boundary_whitespace(
+            segment.model_text
+        )
+        body_ids = extract_formula_placeholder_ids(model_body)
+        body_protected = ProtectedText(
+            model_text=model_body,
+            formula_ids=body_ids,
+        )
+        try:
+            translated = _call_text_translator(translator, model_body)
+            model_call_count += 1
+            if not isinstance(translated, str) or not translated.strip():
+                raise ValueError("模型返回空译文")
+            restored = context.restore(translated, body_protected)
+            translated_segments.append(leading + restored + trailing)
+            LOGGER.info(
+                "%s片段 %d/%d 翻译完成：success",
+                log_label,
+                segment_number,
+                len(segments),
+            )
+        except FormulaPlaceholderError as exc:
+            model_call_count += 1
+            _log_formula_validation_failure(
+                log_label=f"{log_label}片段 {segment_number}/{len(segments)}",
+                index=index,
+                page_idx=page_idx,
+                error=exc,
+                phase="split_retry",
+            )
+            translated_segments.append(segment.source_text)
+            fallback_segments.append(segment_number)
+            LOGGER.warning(
+                "%s片段 %d 最终回退英文：公式占位符校验失败",
+                log_label,
+                segment_number,
+            )
+        except Exception as exc:
+            model_call_count += 1
+            translated_segments.append(segment.source_text)
+            fallback_segments.append(segment_number)
+            LOGGER.warning(
+                "%s片段 %d 最终回退英文：%s",
+                log_label,
+                segment_number,
+                exc,
+            )
+
+    elapsed = time.perf_counter() - started
+    if len(fallback_segments) == len(segments):
+        error = "拆分后所有片段翻译失败"
+        LOGGER.error(
+            "%s翻译完成：failed，处理级别：split_retry，耗时 %.2f 秒，错误：%s",
+            log_label,
+            elapsed,
+            error,
+        )
+        return TranslationOutcome(
+            index=index,
+            section_number=section_number,
+            status="failed",
+            translated_text=None,
+            error=error,
+            model_call_count=model_call_count,
+            elapsed_seconds=elapsed,
+        )
+
+    if fallback_segments:
+        LOGGER.warning(
+            "%s翻译完成：success，处理级别：split_retry，"
+            "部分片段回退英文：%s，耗时 %.2f 秒",
+            log_label,
+            fallback_segments,
+            elapsed,
+        )
+    else:
+        LOGGER.info(
+            "%s翻译完成：success，处理级别：split_retry，耗时 %.2f 秒，"
+            "译文 %d 字符",
+            log_label,
+            elapsed,
+            len("".join(translated_segments)),
+        )
+    return TranslationOutcome(
+        index=index,
+        section_number=section_number,
+        status="success",
+        translated_text="".join(translated_segments),
+        error=None,
+        model_call_count=model_call_count,
+        elapsed_seconds=elapsed,
+    )
 
 
 def _is_empty_table_value(value: Any) -> bool:
@@ -611,6 +952,7 @@ def _translate_one(
     translator: TextTranslator,
     max_retries: int,
     unit_name: str = "段",
+    page_idx: Any = None,
 ) -> TranslationOutcome:
     started = time.perf_counter()
     log_label = (
@@ -650,10 +992,32 @@ def _translate_one(
             total_attempts,
         )
         try:
-            translated = translator.translate(protected.model_text)
+            translated = _call_text_translator(
+                translator,
+                protected.model_text,
+                formula_retry=isinstance(last_error, FormulaPlaceholderError),
+            )
             if not isinstance(translated, str) or not translated.strip():
                 raise ValueError("模型返回空译文")
             translated = formula_context.restore(translated, protected)
+        except FormulaPlaceholderError as exc:
+            last_error = exc
+            _log_formula_validation_failure(
+                log_label=log_label,
+                index=index,
+                page_idx=page_idx,
+                error=exc,
+                phase=("full_retry" if attempt > 1 else "normal"),
+            )
+            if attempt < total_attempts:
+                LOGGER.warning(
+                    "%s第 %d 次调用失败：%s，将重试",
+                    log_label,
+                    attempt,
+                    exc,
+                )
+                continue
+            break
         except Exception as exc:
             last_error = exc
             if attempt < total_attempts:
@@ -664,27 +1028,12 @@ def _translate_one(
                     exc,
                 )
                 continue
-            elapsed = time.perf_counter() - started
-            error = str(exc) or exc.__class__.__name__
-            LOGGER.error(
-                "%s翻译完成：failed，耗时 %.2f 秒，错误：%s",
-                log_label,
-                elapsed,
-                error,
-            )
-            return TranslationOutcome(
-                index=index,
-                section_number=section_number,
-                status="failed",
-                translated_text=None,
-                error=error,
-                model_call_count=attempt,
-                elapsed_seconds=elapsed,
-            )
+            break
         elapsed = time.perf_counter() - started
         LOGGER.info(
-            "%s翻译完成：success，耗时 %.2f 秒，译文 %d 字符",
+            "%s翻译完成：success，处理级别：%s，耗时 %.2f 秒，译文 %d 字符",
             log_label,
+            "full_retry" if attempt > 1 else "normal",
             elapsed,
             len(translated),
         )
@@ -698,7 +1047,40 @@ def _translate_one(
             elapsed_seconds=elapsed,
         )
 
-    raise AssertionError(f"{log_label}未产生翻译结果：{last_error}")
+    if isinstance(last_error, FormulaPlaceholderError):
+        return _translate_formula_split(
+            index=index,
+            section_number=section_number,
+            page_idx=page_idx,
+            log_label=log_label,
+            context=formula_context,
+            protected=protected,
+            translator=translator,
+            started=started,
+            model_call_count=total_attempts,
+        )
+
+    elapsed = time.perf_counter() - started
+    error = str(last_error) or (
+        last_error.__class__.__name__
+        if last_error is not None
+        else "翻译未产生结果"
+    )
+    LOGGER.error(
+        "%s翻译完成：failed，耗时 %.2f 秒，错误：%s",
+        log_label,
+        elapsed,
+        error,
+    )
+    return TranslationOutcome(
+        index=index,
+        section_number=section_number,
+        status="failed",
+        translated_text=None,
+        error=error,
+        model_call_count=total_attempts,
+        elapsed_seconds=elapsed,
+    )
 
 
 def _translate_auxiliary_one(
@@ -1020,8 +1402,8 @@ def _apply_auxiliary_outcome(
 
 def _collect_translation_work(
     items: list[dict[str, Any]],
-) -> list[tuple[int, int, str]]:
-    work: list[tuple[int, int, str]] = []
+) -> list[tuple[int, int, Any, str]]:
+    work: list[tuple[int, int, Any, str]] = []
     section_number = 0
     for index, item in enumerate(items):
         if item.get("type") != "text":
@@ -1029,7 +1411,9 @@ def _collect_translation_work(
         section_number += 1
         if item.get("translation_status") == "success":
             continue
-        work.append((index, section_number, item["text"]))
+        work.append(
+            (index, section_number, item.get("page_idx"), item["text"])
+        )
     return work
 
 
@@ -1167,8 +1551,9 @@ def translate_content_list_file(
             text,
             translator,
             max_retries,
+            page_idx=page_idx,
         )
-        for index, section_number, text in work
+        for index, section_number, page_idx, text in work
     ]
     futures.extend(
         executor.submit(
