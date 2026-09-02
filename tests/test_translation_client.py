@@ -286,6 +286,13 @@ def test_translate_sends_compatible_request_and_returns_only_content():
         "SS1",
         "占位符",
         "只返回译文",
+        "完整翻译所有英文说明性内容",
+        "公式占位符是不可翻译的原子字符串",
+        "每个公式占位符只能出现一次",
+        "占位符可以根据中文语序调整位置",
+        "不得在占位符内部插入空格",
+        "保留 HTML、LaTeX 和其他结构化标记的结构",
+        "技术术语应结合化工论文语境翻译",
     ):
         assert required in TRANSLATION_SYSTEM_PROMPT
 

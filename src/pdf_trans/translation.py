@@ -359,6 +359,16 @@ def _pack_formula_sentence_chunks(sentences: list[str]) -> list[str]:
     return chunks
 
 
+def _force_grouped_sentence_chunks(sentences: list[str]) -> list[str]:
+    if len(sentences) < 2:
+        return []
+    split_at = max(1, len(sentences) // 2)
+    return [
+        "".join(sentences[:split_at]),
+        "".join(sentences[split_at:]),
+    ]
+
+
 @dataclass(frozen=True)
 class _FormulaSplitSegment:
     model_text: str
@@ -372,6 +382,8 @@ def _build_formula_split_segments(
     sentences = _split_english_sentences(protected.model_text)
     chunks = _pack_formula_sentence_chunks(sentences)
     if len(chunks) <= 1:
+        chunks = _force_grouped_sentence_chunks(sentences)
+    if not chunks:
         return []
 
     segments: list[_FormulaSplitSegment] = []
@@ -391,11 +403,17 @@ def _build_formula_split_segments(
     return segments
 
 
-_FORMULA_RETRY_INSTRUCTION = (
-    "公式占位符保护重试要求：只返回译文。每个原文占位符必须逐字保留，"
-    "每个占位符 ID 只能出现一次，不得删除、复制、翻译或篡改；"
-    "占位符可以根据中文语序合理调整位置。"
-)
+_FORMULA_RETRY_INSTRUCTION = """这是一次公式占位符校验失败后的重试，请严格执行以下规则：
+
+1. 先完整处理输入中的所有英文内容，不得只翻译部分句子；
+2. 包含公式占位符的句子也必须翻译占位符周围的说明性英文；
+3. 每个原文公式占位符必须完整、逐字保留；
+4. 每个占位符只能出现一次；
+5. 不得删除、复制、翻译、拆开或篡改占位符；
+6. 不得在占位符内部插入空格、换行、标点、中文或英文；
+7. 占位符可以按照中文语序调整位置，但只能移动完整占位符；
+8. 除公式占位符、编号、单位、型号和必要专有名词外，不得原样保留英文说明；
+9. 只返回完整译文，不返回说明、分析、前缀或重试原因。"""
 
 
 def _call_text_translator(
@@ -502,7 +520,11 @@ def _translate_formula_split(
             formula_ids=body_ids,
         )
         try:
-            translated = _call_text_translator(translator, model_body)
+            translated = _call_text_translator(
+                translator,
+                model_body,
+                formula_retry=True,
+            )
             model_call_count += 1
             if not isinstance(translated, str) or not translated.strip():
                 raise ValueError("模型返回空译文")

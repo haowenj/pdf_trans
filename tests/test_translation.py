@@ -119,6 +119,7 @@ def test_text_translation_hides_multiple_formulas_and_restores_exactly(tmp_path)
 
     assert formula_one not in translator.received[0]
     assert formula_two not in translator.received[0]
+    assert len(translator.received) == 1
     result = read_items(output)[0]
     assert result["translated_text"] == (
         f"温度 {formula_one} 和密度 {formula_two}"
@@ -177,6 +178,46 @@ def test_placeholder_validation_exhaustion_never_writes_success(tmp_path):
     assert stats == TranslationStats(
         1, 2, 0, 0, 1, 0, text_model_call_count=2
     )
+
+
+def test_short_multi_sentence_formula_failure_uses_grouped_sentence_chunks(
+    tmp_path,
+):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source_text = (
+        "First sentence with $x$. Second sentence with $y$. "
+        "Third sentence with $z$."
+    )
+    source.write_text(
+        json.dumps([{"type": "text", "text": source_text, "page_idx": 12}]),
+        encoding="utf-8",
+    )
+    translator = FormulaFailureThenSplitTranslator(
+        lambda text: text.replace(FORMULA_TOKEN_RE.findall(text)[0], "", 1)
+    )
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=0,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["translation_status"] == "success"
+    assert result["translated_text"] == (
+        "第一句 with $x$. 第二句 with $y$. 第三句 with $z$."
+    )
+    assert len(translator.received) == 3
+    assert len(translator.received[1:]) == 2
+    assert all(
+        len(FORMULA_TOKEN_RE.findall(chunk))
+        == chunk.count("PDFTRANS_FORMULA")
+        for chunk in translator.received[1:]
+    )
+    assert stats.model_call_count == 3
 
 
 class FormulaFailureThenSplitTranslator:
@@ -335,6 +376,64 @@ class InstructionAwareFormulaTranslator:
     def translate_with_instruction(self, text, instruction):
         self.instructions.append(instruction)
         return text.replace("Temperature", "温度")
+
+
+class SplitInstructionRecordingTranslator:
+    def __init__(self):
+        self.normal_calls = []
+        self.instruction_calls = []
+
+    def translate(self, text, *, response_format=None):
+        assert response_format is None
+        self.normal_calls.append(text)
+        token = FORMULA_TOKEN_RE.findall(text)[0]
+        return text.replace(token, "", 1)
+
+    def translate_with_instruction(self, text, instruction):
+        self.instruction_calls.append((text, instruction))
+        if len(self.instruction_calls) == 1:
+            token = FORMULA_TOKEN_RE.findall(text)[0]
+            return text.replace(token, "", 1)
+        return (
+            text.replace("First sentence", "第一句")
+            .replace("Second sentence", "第二句")
+            .replace("Third sentence", "第三句")
+        )
+
+
+def test_formula_split_calls_use_strengthened_instruction(tmp_path):
+    source = tmp_path / "normalized_content_list.json"
+    output = tmp_path / "translated_content_list.json"
+    source_text = (
+        "First sentence with $x$. Second sentence with $y$. "
+        "Third sentence with $z$."
+    )
+    source.write_text(
+        json.dumps([{"type": "text", "text": source_text}]),
+        encoding="utf-8",
+    )
+    translator = SplitInstructionRecordingTranslator()
+
+    stats = translate_content_list_file(
+        source,
+        output,
+        translator,
+        max_retries=1,
+        concurrency=1,
+    )
+
+    result = read_items(output)[0]
+    assert result["translation_status"] == "success"
+    assert result["translated_text"] == (
+        "第一句 with $x$. 第二句 with $y$. 第三句 with $z$."
+    )
+    assert len(translator.normal_calls) == 1
+    assert len(translator.instruction_calls) == 3
+    assert all(
+        "不得在占位符内部插入空格" in instruction
+        for _, instruction in translator.instruction_calls
+    )
+    assert stats.model_call_count == 4
 
 
 def test_formula_full_retry_uses_explicit_instruction_before_splitting(
