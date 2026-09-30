@@ -147,6 +147,34 @@ def test_process_pdf_runs_complete_workflow(tmp_path):
     )
 
 
+def test_process_pdf_accepts_v1_structured_archive(tmp_path):
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF")
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("result/structured_content.json", json.dumps({
+            "pages": [{"page_idx": 0, "blocks": [
+                {"type": "paragraph_title", "level": 1, "content": "合同"},
+                {"type": "text", "content": "正文"},
+                {"type": "image", "image_source": "images/a.jpg"},
+            ]}],
+        }, ensure_ascii=False))
+        archive.writestr("result/images/a.jpg", b"image")
+
+    result = process_pdf(
+        pdf,
+        data_dir=tmp_path / "data",
+        client=FakeMinerUClient(buffer.getvalue()),
+        translator=FakeTranslator(),
+    )
+
+    assert result.source_path.name == "structured_content_list.json"
+    assert result.markdown_path.read_text(encoding="utf-8") == (
+        "# 译文：合同\n\n译文：正文\n\n![](images/a.jpg)\n"
+    )
+    assert (result.source_path.parent / "images/a.jpg").read_bytes() == b"image"
+
+
 def test_process_pdf_renders_accepted_normalized_formula(
     tmp_path,
     monkeypatch,

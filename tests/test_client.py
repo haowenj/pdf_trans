@@ -1,3 +1,8 @@
+import hashlib
+import io
+import json
+import zipfile
+
 import httpx
 import pytest
 
@@ -67,6 +72,110 @@ def test_parse_pdf_submits_polls_and_downloads_zip(tmp_path):
         assert f'name="{field}"'.encode() in seen_post_body
         assert value.encode() in seen_post_body
     assert b'name="server_url"' not in seen_post_body
+
+
+@pytest.mark.parametrize("missing_status", [404, 405])
+def test_parse_pdf_uses_v1_when_tasks_endpoint_is_missing(tmp_path, missing_status):
+    pdf = tmp_path / "contract.pdf"
+    content = b"%PDF-1.7 example"
+    pdf.write_bytes(content)
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, "w") as archive:
+        archive.writestr("structured_content.json", b'{"pages": []}')
+    archive_bytes = archive_buffer.getvalue()
+    calls = []
+    job_requests = []
+    statuses = iter(["queued", "running", "completed"])
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        path = request.url.path
+        if path == "/tasks":
+            return httpx.Response(missing_status)
+        if path == "/v1/uploads":
+            assert request.method == "POST"
+            assert json.loads(request.content) == {
+                "filename": "contract.pdf",
+                "bytes": len(content),
+                "mime_type": "application/pdf",
+                "purpose": "parse",
+                "sha256sum": hashlib.sha256(content).hexdigest(),
+            }
+            return httpx.Response(200, json={
+                "id": "upload-1",
+                "upload_url": "/v1/uploads/upload-1/content",
+                "upload_headers": {"content-type": "application/octet-stream"},
+            })
+        if path == "/v1/uploads/upload-1/content":
+            assert request.method == "PUT"
+            assert request.content == content
+            return httpx.Response(200)
+        if path == "/v1/uploads/upload-1/complete":
+            assert json.loads(request.content) == {
+                "sha256sum": hashlib.sha256(content).hexdigest()
+            }
+            return httpx.Response(200, json={"file": {"id": "input-file"}})
+        if path == "/v1/parse/jobs":
+            job_requests.append(json.loads(request.content))
+            return httpx.Response(202, json={"job_id": "job-1"})
+        if path == "/v1/parse/jobs/job-1":
+            status = next(statuses)
+            return httpx.Response(200, json={
+                "status": status,
+                "files": [{"status": status, "output_files": {
+                    "zip": {"file_id": "output-file"}
+                }}],
+            })
+        if path == "/v1/files/output-file/content":
+            return httpx.Response(200, content=archive_bytes,
+                                  headers={"content-type": "application/octet-stream"})
+        if path.startswith("/v1/files/") and request.method == "DELETE":
+            return httpx.Response(200)
+        raise AssertionError(f"unexpected request: {request.method} {path}")
+
+    client = MinerUClient(
+        svr_url="http://mineru.test/",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+        sleep=lambda _: None,
+    )
+
+    assert client.parse_pdf(pdf) == archive_bytes
+    assert job_requests == [{
+        "files": [{"source": {"type": "file_id", "file_id": "input-file"}}],
+        "tier": "standard",
+        "ocr_mode": "auto",
+        "output_formats": ["zip"],
+    }]
+    assert ("DELETE", "/v1/files/input-file") in calls
+    assert ("DELETE", "/v1/files/output-file") in calls
+
+
+def test_parse_pdf_does_not_fallback_after_tasks_server_error(tmp_path):
+    pdf = tmp_path / "contract.pdf"
+    pdf.write_bytes(b"%PDF")
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(500, text="server unavailable")
+
+    client = MinerUClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    with pytest.raises(MinerUClientError, match="HTTP 500"):
+        client.parse_pdf(pdf)
+    assert calls == ["/tasks"]
+
+
+def test_submit_reports_missing_tasks_endpoint_as_client_error(tmp_path):
+    pdf = tmp_path / "contract.pdf"
+    pdf.write_bytes(b"%PDF")
+    client = MinerUClient(http_client=httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(404)
+    )))
+
+    with pytest.raises(MinerUClientError, match="HTTP 404"):
+        client.submit(pdf)
 
 
 def test_submit_uses_remote_hybrid_backend_and_server_url(tmp_path):

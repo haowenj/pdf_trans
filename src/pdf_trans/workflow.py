@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from pdf_trans.archive import extract_zip, find_content_list
+from pdf_trans.archive import extract_zip, resolve_content_list
 from pdf_trans.cleaner import (
     ContentStats,
     clean_content_list_file_with_items,
@@ -275,7 +275,7 @@ def _process_pdf_stages(
             output_root,
             reserved_paths=(archive_path.name,),
         )
-        source_path = find_content_list(extracted_paths)
+        source_path = resolve_content_list(extracted_paths)
         stage.set_result(
             f"解压 {len(extracted_paths)} 个文件，content list 为 {source_path}"
         )

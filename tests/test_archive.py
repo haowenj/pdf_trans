@@ -1,8 +1,10 @@
+import json
 from io import BytesIO
 from zipfile import ZipFile
 
 import pytest
 
+from pdf_trans import archive as mineru_archive
 from pdf_trans.archive import extract_zip, find_content_list
 from pdf_trans.errors import ArchiveError
 
@@ -44,6 +46,39 @@ def test_find_content_list_ignores_files_from_previous_runs(tmp_path):
     extracted = extract_zip(archive_bytes, tmp_path / "data")
 
     assert find_content_list(extracted).name == "new_content_list.json"
+
+
+def test_resolve_content_list_converts_v1_structured_content(tmp_path):
+    archive_bytes = make_zip({
+        "result/structured_content.json": json.dumps({"pages": [{
+            "page_idx": 2,
+            "blocks": [
+                {"type": "paragraph_title", "level": 2, "content": "标题", "bbox": [1, 2, 3, 4]},
+                {"type": "table", "content": "<table></table>",
+                 "image_source": "images/table.jpg",
+                 "captions": [{"content": "表题"}], "footnotes": [{"content": "单位"}]},
+                {"type": "image", "image_source": "images/seal.jpg",
+                 "captions": [{"content": "印章"}]},
+            ],
+        }]}).encode(),
+        "result/images/seal.jpg": b"image",
+        "result/images/table.jpg": b"table",
+    })
+    extracted = extract_zip(archive_bytes, tmp_path / "data")
+
+    content_path = mineru_archive.resolve_content_list(extracted)
+
+    assert content_path.name == "structured_content_list.json"
+    assert json.loads(content_path.read_text()) == [
+        {"type": "text", "page_idx": 2, "bbox": [1, 2, 3, 4],
+         "text": "标题", "text_level": 2},
+        {"type": "table", "page_idx": 2, "table_body": "<table></table>",
+         "table_caption": ["表题"], "table_footnote": ["单位"],
+         "img_path": "images/table.jpg"},
+        {"type": "image", "page_idx": 2, "image_caption": ["印章"],
+         "image_footnote": [], "img_path": "images/seal.jpg"},
+    ]
+    assert (content_path.parent / "images/seal.jpg").read_bytes() == b"image"
 
 
 @pytest.mark.parametrize("unsafe_name", ["../escape.json", "/absolute.json"])

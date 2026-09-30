@@ -6,7 +6,7 @@ list。项目同时提供命令行模式和单进程 Web 面板模式。
 ## 环境
 
 - Python 3.11+
-- MinerU 3.4.4 服务；Web 默认地址为 `http://127.0.0.1:7100`
+- MinerU 3.x 或 4.x 服务；Web 默认地址为 `http://127.0.0.1:7100`
 - OpenAI 兼容翻译接口
 
 ## 安装
@@ -60,6 +60,11 @@ python3 -m pdf_trans /path/to/document.pdf \
 `--svr-url` 是 MinerU 的完整解析 API 地址；`--mineru-server-url` 是远端模型推理服务
 地址。两者可以同时使用。也可以通过环境变量
 `PDF_TRANS_MINERU_BACKEND` 和 `PDF_TRANS_MINERU_SERVER_URL` 全局设置，命令行参数优先。
+客户端先尝试 MinerU 3.x 的 `/tasks`；当该接口返回 404 或 405 时，自动改用
+MinerU 4.x 的 `/v1/uploads` 和 `/v1/parse/jobs`。4.x 的 ZIP 如果只包含
+`structured_content.json`，程序会生成供后续流程使用的
+`structured_content_list.json`。4.x 的解析后端由 MinerU 服务端配置；
+`--mineru-backend` 和 `--mineru-server-url` 只传给 3.x 的 `/tasks` 接口。
 
 如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
 

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
+from zipfile import is_zipfile
 
 import httpx
 
@@ -21,6 +25,14 @@ SUPPORTED_MINERU_BACKENDS = (
 )
 POLL_INTERVAL_SECONDS = 2.0
 TASK_TIMEOUT_SECONDS = 30 * 60
+LOGGER = logging.getLogger(__name__)
+
+
+class _LegacyEndpointUnavailable(Exception):
+    """The server does not expose the MinerU 3.x /tasks endpoint."""
+
+    def __init__(self, status_code: int) -> None:
+        self.status_code = status_code
 
 BASE_PARSE_FORM = MappingProxyType(
     {
@@ -109,7 +121,10 @@ class MinerUClient:
             self._http.close()
 
     def parse_pdf(self, pdf_path: Path) -> bytes:
-        submission = self.submit(pdf_path)
+        try:
+            submission = self._submit_legacy(pdf_path)
+        except _LegacyEndpointUnavailable:
+            return self._parse_v1_pdf(pdf_path)
         self.wait_for_completion(submission)
         return self.download_result(submission)
 
@@ -121,6 +136,14 @@ class MinerUClient:
         return form
 
     def submit(self, pdf_path: Path) -> TaskSubmission:
+        try:
+            return self._submit_legacy(pdf_path)
+        except _LegacyEndpointUnavailable as exc:
+            raise MinerUClientError(
+                f"提交 MinerU 任务失败：HTTP {exc.status_code}"
+            ) from exc
+
+    def _submit_legacy(self, pdf_path: Path) -> TaskSubmission:
         try:
             with pdf_path.open("rb") as pdf_file:
                 response = self._http.post(
@@ -137,6 +160,8 @@ class MinerUClient:
         except (OSError, httpx.HTTPError) as exc:
             raise MinerUClientError(f"提交 MinerU 任务失败：{exc}") from exc
 
+        if response.status_code in {404, 405}:
+            raise _LegacyEndpointUnavailable(response.status_code)
         if response.status_code != 202:
             raise MinerUClientError(
                 f"提交 MinerU 任务失败：HTTP {response.status_code} {response.text}"
@@ -204,3 +229,149 @@ class MinerUClient:
         if not isinstance(payload, dict):
             raise MinerUClientError(f"MinerU {label}响应必须是 JSON 对象")
         return payload
+
+    def _v1_json_request(
+        self, method: str, url: str, label: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        try:
+            response = self._http.request(method, url, **kwargs)
+        except httpx.HTTPError as exc:
+            raise MinerUClientError(f"MinerU v1 {label}失败：{exc}") from exc
+        if response.status_code not in {200, 202}:
+            raise MinerUClientError(
+                f"MinerU v1 {label}失败：HTTP {response.status_code}"
+            )
+        return self._json_object(response, f"v1 {label}")
+
+    def _parse_v1_pdf(self, pdf_path: Path) -> bytes:
+        base_url = self._svr_url
+        input_file_id: str | None = None
+        output_file_id: str | None = None
+        remove_input_file = False
+        try:
+            try:
+                content = pdf_path.read_bytes()
+            except OSError as exc:
+                raise MinerUClientError(f"读取 MinerU 输入文件失败：{exc}") from exc
+            digest = hashlib.sha256(content).hexdigest()
+            upload = self._v1_json_request(
+                "POST",
+                f"{base_url}/v1/uploads",
+                "创建上传",
+                json={
+                    "filename": pdf_path.name,
+                    "bytes": len(content),
+                    "mime_type": "application/pdf",
+                    "purpose": "parse",
+                    "sha256sum": digest,
+                },
+            )
+            upload_id = upload.get("id")
+            if not isinstance(upload_id, str) or not upload_id:
+                raise MinerUClientError("MinerU v1 返回了无效 upload id")
+
+            file_payload = upload.get("file")
+            if upload.get("status") != "completed" or not isinstance(
+                file_payload, dict
+            ):
+                upload_url = upload.get("upload_url")
+                if not isinstance(upload_url, str) or not upload_url:
+                    upload_url = f"{base_url}/v1/uploads/{upload_id}/content"
+                elif upload_url.startswith("/"):
+                    upload_url = f"{base_url}{upload_url}"
+                headers = upload.get("upload_headers")
+                if not isinstance(headers, dict):
+                    headers = {"content-type": "application/octet-stream"}
+                try:
+                    response = self._http.put(
+                        upload_url,
+                        headers={str(key): str(value) for key, value in headers.items()},
+                        content=content,
+                    )
+                except httpx.HTTPError as exc:
+                    raise MinerUClientError(f"MinerU v1 上传内容失败：{exc}") from exc
+                if response.status_code != 200:
+                    raise MinerUClientError(
+                        f"MinerU v1 上传内容失败：HTTP {response.status_code}"
+                    )
+                completed = self._v1_json_request(
+                    "POST",
+                    f"{base_url}/v1/uploads/{upload_id}/complete",
+                    "完成上传",
+                    json={"sha256sum": digest},
+                )
+                file_payload = completed.get("file")
+                remove_input_file = True
+
+            input_file_id = (
+                file_payload.get("id") if isinstance(file_payload, dict) else None
+            )
+            if not isinstance(input_file_id, str) or not input_file_id:
+                raise MinerUClientError("MinerU v1 返回了无效 input file id")
+
+            job = self._v1_json_request(
+                "POST",
+                f"{base_url}/v1/parse/jobs",
+                "创建解析任务",
+                json={
+                    "files": [{"source": {"type": "file_id", "file_id": input_file_id}}],
+                    "tier": "basic" if self._backend_config.backend == "pipeline" else "standard",
+                    "ocr_mode": "auto",
+                    "output_formats": ["zip"],
+                },
+            )
+            job_id = job.get("job_id")
+            if not isinstance(job_id, str) or not job_id:
+                raise MinerUClientError("MinerU v1 返回了无效 job id")
+
+            deadline = self._clock() + TASK_TIMEOUT_SECONDS
+            while self._clock() < deadline:
+                job = self._v1_json_request(
+                    "GET",
+                    f"{base_url}/v1/parse/jobs/{job_id}",
+                    "查询解析任务",
+                )
+                status = job.get("status")
+                if status in {"queued", "running"}:
+                    self._sleep(POLL_INTERVAL_SECONDS)
+                    continue
+                if status in {"completed", "partial"}:
+                    break
+                raise MinerUClientError(f"MinerU v1 解析任务未完成：{status}")
+            else:
+                raise MinerUClientError("等待 MinerU v1 解析任务超时")
+
+            files = job.get("files")
+            first_file = files[0] if isinstance(files, list) and files else None
+            output_files = (
+                first_file.get("output_files") if isinstance(first_file, dict) else None
+            )
+            zip_ref = output_files.get("zip") if isinstance(output_files, dict) else None
+            output_file_id = zip_ref.get("file_id") if isinstance(zip_ref, dict) else None
+            if not isinstance(output_file_id, str) or not output_file_id:
+                raise MinerUClientError("MinerU v1 结果缺少 ZIP")
+
+            try:
+                response = self._http.get(
+                    f"{base_url}/v1/files/{output_file_id}/content"
+                )
+            except httpx.HTTPError as exc:
+                raise MinerUClientError(f"下载 MinerU v1 结果失败：{exc}") from exc
+            if response.status_code != 200:
+                raise MinerUClientError(
+                    f"下载 MinerU v1 结果失败：HTTP {response.status_code}"
+                )
+            if not is_zipfile(io.BytesIO(response.content)):
+                raise MinerUClientError("MinerU v1 结果不是 ZIP")
+            return response.content
+        finally:
+            cleanup_ids = [output_file_id]
+            if remove_input_file:
+                cleanup_ids.append(input_file_id)
+            for file_id in cleanup_ids:
+                if not file_id:
+                    continue
+                try:
+                    self._http.delete(f"{base_url}/v1/files/{file_id}")
+                except httpx.HTTPError:
+                    LOGGER.warning("无法清理临时 MinerU 文件")
