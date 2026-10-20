@@ -520,11 +520,11 @@ def test_process_pdf_passes_mineru_config_to_created_client(
     translator = FakeTranslator()
 
     class ContextClient:
-        def __init__(self, *, svr_url, backend, server_url):
+        def __init__(self, *, svr_url, gpustack_model, api_key):
             received.update(
                 svr_url=svr_url,
-                backend=backend,
-                server_url=server_url,
+                gpustack_model=gpustack_model,
+                api_key=api_key,
             )
 
         def __enter__(self):
@@ -541,16 +541,16 @@ def test_process_pdf_passes_mineru_config_to_created_client(
     process_pdf(
         pdf,
         svr_url="http://mineru.internal:7200",
-        mineru_backend="hybrid-http-client",
-        mineru_server_url="http://gpustack:8000",
+        mineru_gpustack_model="mineru4",
+        mineru_api_key="mineru-secret",
         data_dir=tmp_path / "data",
         translator=translator,
     )
 
     assert received == {
         "svr_url": "http://mineru.internal:7200",
-        "backend": "hybrid-http-client",
-        "server_url": "http://gpustack:8000",
+        "gpustack_model": "mineru4",
+        "api_key": "mineru-secret",
     }
 
 

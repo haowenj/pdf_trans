@@ -12,7 +12,7 @@ from pdf_trans.cleaner import (
     clean_content_list_file_with_items,
 )
 from pdf_trans.client import (
-    DEFAULT_MINERU_BACKEND,
+    DEFAULT_GPUSTACK_MODEL,
     DEFAULT_SVR_URL,
     MinerUClient,
 )
@@ -229,8 +229,8 @@ def _process_pdf_stages(
     pdf_path: Path,
     *,
     svr_url: str,
-    mineru_backend: str,
-    mineru_server_url: str | None,
+    mineru_gpustack_model: str,
+    mineru_api_key: str,
     data_dir: Path | None,
     client: PDFParser | None,
     translator: TextTranslator | None,
@@ -254,8 +254,8 @@ def _process_pdf_stages(
         if client is None:
             with MinerUClient(
                 svr_url=svr_url,
-                backend=mineru_backend,
-                server_url=mineru_server_url,
+                gpustack_model=mineru_gpustack_model,
+                api_key=mineru_api_key,
             ) as mineru_client:
                 archive_bytes = mineru_client.parse_pdf(resolved_pdf)
         else:
@@ -388,8 +388,8 @@ def process_pdf(
     pdf_path: Path,
     *,
     svr_url: str = DEFAULT_SVR_URL,
-    mineru_backend: str = DEFAULT_MINERU_BACKEND,
-    mineru_server_url: str | None = None,
+    mineru_gpustack_model: str = DEFAULT_GPUSTACK_MODEL,
+    mineru_api_key: str = "",
     data_dir: Path | None = None,
     client: PDFParser | None = None,
     translator: TextTranslator | None = None,
@@ -404,8 +404,8 @@ def process_pdf(
         result = _process_pdf_stages(
             pdf_path,
             svr_url=svr_url,
-            mineru_backend=mineru_backend,
-            mineru_server_url=mineru_server_url,
+            mineru_gpustack_model=mineru_gpustack_model,
+            mineru_api_key=mineru_api_key,
             data_dir=data_dir,
             client=client,
             translator=translator,

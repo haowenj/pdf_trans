@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from pdf_trans.client import (
-    DEFAULT_MINERU_BACKEND,
-    resolve_mineru_backend_config,
-)
+from pdf_trans.client import DEFAULT_GPUSTACK_MODEL
 
 DEFAULT_MINERU_URL = "http://127.0.0.1:7100"
 
@@ -36,8 +33,8 @@ class WebSettings:
     database_url: str
     max_upload_mib: int
     mineru_url: str
-    mineru_backend: str
-    mineru_server_url: str | None
+    mineru_gpustack_model: str
+    mineru_api_key: str = field(repr=False)
     host: str
     port: int
 
@@ -65,13 +62,6 @@ class WebSettings:
             "PDF_TRANS_DATABASE_URL",
             f"sqlite:///{(data_dir / 'pdf_trans.db').resolve()}",
         )
-        mineru_config = resolve_mineru_backend_config(
-            values.get(
-                "PDF_TRANS_MINERU_BACKEND",
-                DEFAULT_MINERU_BACKEND,
-            ),
-            values.get("PDF_TRANS_MINERU_SERVER_URL"),
-        )
         return cls(
             data_dir=data_dir,
             database_url=database_url,
@@ -81,8 +71,11 @@ class WebSettings:
             mineru_url=values.get(
                 "PDF_TRANS_MINERU_URL", DEFAULT_MINERU_URL
             ).rstrip("/"),
-            mineru_backend=mineru_config.backend,
-            mineru_server_url=mineru_config.server_url,
+            mineru_gpustack_model=(
+                values.get("PDF_TRANS_MINERU_GPUSTACK_MODEL", "").strip()
+                or DEFAULT_GPUSTACK_MODEL
+            ),
+            mineru_api_key=values.get("PDF_TRANS_MINERU_API_KEY", "").strip(),
             host=values.get("PDF_TRANS_WEB_HOST", "127.0.0.1"),
             port=_positive_int(
                 values, "PDF_TRANS_WEB_PORT", 8000, maximum=65535

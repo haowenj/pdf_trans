@@ -121,8 +121,8 @@ class TaskRunner:
         result = self.services.process_pdf(
             source,
             svr_url=self.settings.mineru_url,
-            mineru_backend=self.settings.mineru_backend,
-            mineru_server_url=self.settings.mineru_server_url,
+            mineru_gpustack_model=self.settings.mineru_gpustack_model,
+            mineru_api_key=self.settings.mineru_api_key,
             data_dir=attempt_dir,
         )
         summary = (

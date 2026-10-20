@@ -18,10 +18,6 @@ class MinerUClientError(PDFTransError):
     """Raised when communication with MinerU fails."""
 
 
-class MinerUConfigError(PDFTransError):
-    """Raised when MinerU backend configuration is invalid."""
-
-
 class WorkflowError(PDFTransError):
     """Raised when workflow input validation fails."""
 

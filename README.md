@@ -1,12 +1,12 @@
 # PDF Trans
 
-上传一个 PDF 到 MinerU 3.4.4 异步接口，下载解析结果，清洗并逐对象翻译 content
+上传一个 PDF 到 MinerU 4 异步接口，下载解析结果，清洗并逐对象翻译 content
 list。项目同时提供命令行模式和单进程 Web 面板模式。
 
 ## 环境
 
 - Python 3.11+
-- MinerU 3.x 或 4.x 服务；Web 默认地址为 `http://127.0.0.1:7100`
+- MinerU 4 服务；Web 默认地址为 `http://127.0.0.1:7100`
 - OpenAI 兼容翻译接口
 
 ## 安装
@@ -48,23 +48,20 @@ python3 -m pdf_trans /path/to/document.pdf \
   --svr-url http://mineru.example:7100
 ```
 
-默认使用本地 MinerU `hybrid-engine`。如果 MinerU 服务配置为通过 OpenAI 兼容接口调用
-GPUStack 上的 MinerU 模型，可切换为 `hybrid-http-client`：
+如果 MinerU 4 服务使用其他 GPUStack 模型或路由名称，可指定：
 
 ```bash
 python3 -m pdf_trans /path/to/document.pdf \
-  --mineru-backend hybrid-http-client \
-  --mineru-server-url http://gpustack.example:8000
+  --mineru-gpustack-model mineru-custom
 ```
 
-`--svr-url` 是 MinerU 的完整解析 API 地址；`--mineru-server-url` 是远端模型推理服务
-地址。两者可以同时使用。也可以通过环境变量
-`PDF_TRANS_MINERU_BACKEND` 和 `PDF_TRANS_MINERU_SERVER_URL` 全局设置，命令行参数优先。
-客户端先尝试 MinerU 3.x 的 `/tasks`；当该接口返回 404 或 405 时，自动改用
-MinerU 4.x 的 `/v1/uploads` 和 `/v1/parse/jobs`。4.x 的 ZIP 如果只包含
+`--svr-url` 是 MinerU 4 API 的基础地址，可包含反向代理路径前缀；
+`PDF_TRANS_MINERU_URL` 可设置默认地址。客户端直接使用 `/v1/uploads` 和
+`/v1/parse/jobs`。解析请求固定使用 `standard` tier，
+`X-GPUStack-Model` 默认值为 `mineru4`。ZIP 如果只包含
 `structured_content.json`，程序会生成供后续流程使用的
-`structured_content_list.json`。4.x 的解析后端由 MinerU 服务端配置；
-`--mineru-backend` 和 `--mineru-server-url` 只传给 3.x 的 `/tasks` 接口。
+`structured_content_list.json`。如服务要求 Bearer 认证，设置
+`PDF_TRANS_MINERU_API_KEY`；它与翻译接口的 `TRANSLATION_API_KEY` 分开配置。
 
 如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
 
@@ -157,15 +154,14 @@ PDF_TRANS_WEB_PORT=8088 docker compose up --build
 任务数据库、上传 PDF、解析结果、日志和 Markdown 会持久化在宿主机的 `data/web`，
 执行 `docker compose down` 后仍会保留。默认情况下，容器通过
 `host.docker.internal:7100` 访问宿主机上的 MinerU；如果 MinerU 在其他地址，设置
-`PDF_TRANS_MINERU_URL`。如需让 MinerU 通过 GPUStack 上的远端模型推理，设置：
+`PDF_TRANS_MINERU_URL`。如需指定 MinerU 4 的模型名称和 API Key，设置：
 
 ```dotenv
-PDF_TRANS_MINERU_BACKEND=hybrid-http-client
-PDF_TRANS_MINERU_SERVER_URL=http://gpustack.example:8000
+PDF_TRANS_MINERU_GPUSTACK_MODEL=mineru4
+PDF_TRANS_MINERU_API_KEY=replace-with-mineru-key
 ```
 
-`PDF_TRANS_MINERU_URL` 始终指向 MinerU 的完整 HTTP API，
-`PDF_TRANS_MINERU_SERVER_URL` 仅指向远端模型推理服务。其他 `PDF_TRANS_*` 和
+`PDF_TRANS_MINERU_URL` 指向 MinerU 4 的 HTTP API 基础地址。其他 `PDF_TRANS_*` 和
 `TRANSLATION_*` 变量也可以写入 `.env`，Compose 会传入容器。
 
 停止服务：
@@ -195,8 +191,8 @@ export PDF_TRANS_WEB_DATA_DIR="/absolute/path/to/data/web"
 export PDF_TRANS_DATABASE_URL="sqlite:////absolute/path/to/data/web/pdf_trans.db"
 export PDF_TRANS_MAX_UPLOAD_MIB="200"
 export PDF_TRANS_MINERU_URL="http://127.0.0.1:7100"
-export PDF_TRANS_MINERU_BACKEND="hybrid-engine"
-export PDF_TRANS_MINERU_SERVER_URL=""
+export PDF_TRANS_MINERU_GPUSTACK_MODEL="mineru4"
+export PDF_TRANS_MINERU_API_KEY=""
 export PDF_TRANS_WEB_HOST="127.0.0.1"
 export PDF_TRANS_WEB_PORT="8000"
 ```
@@ -214,24 +210,17 @@ export PDF_TRANS_WEB_PORT="8000"
 - `PDF_TRANS_DATABASE_URL` 默认指向 `data/web/pdf_trans.db`；
 - `PDF_TRANS_MAX_UPLOAD_MIB` 默认 `200`；
 - `PDF_TRANS_MINERU_URL` 默认 `http://127.0.0.1:7100`；
-- `PDF_TRANS_MINERU_BACKEND` 默认 `hybrid-engine`，可选 `hybrid-http-client`；
-- `PDF_TRANS_MINERU_SERVER_URL` 在使用 `hybrid-http-client` 时必填，指向 GPUStack
-  等远端推理服务；
+- `PDF_TRANS_MINERU_GPUSTACK_MODEL` 默认 `mineru4`，作为请求头
+  `X-GPUStack-Model` 发送；
+- `PDF_TRANS_MINERU_API_KEY` 可选，配置后作为 Bearer Key 发送给 MinerU；
 - `PDF_TRANS_WEB_HOST` 默认 `127.0.0.1`；
 - `PDF_TRANS_WEB_PORT` 默认 `8000`。
 
 项目仍通过普通 HTTP 请求调用 `/chat/completions`。显式配置思考开关时，请求体
 顶层增加 `chat_template_kwargs.enable_thinking`；未配置时请求体保持原样。
 
-如果使用 `hybrid-http-client`，MinerU 服务端仍需配置模型来源和 GPUStack API Key，
-例如：
-
-```dotenv
-MINERU_MODEL_SOURCE=local
-MINERU_VL_API_KEY=replace-with-gpustack-key
-```
-
-两种后端都固定使用 `effort=medium`，并关闭图片解析（`image_analysis=false`）。
+MinerU 4 的解析模型和推理服务在 MinerU 服务端配置；本项目只提交
+`standard` tier、`auto` OCR 模式并请求 ZIP 结果。
 
 ## 输出文件
 
