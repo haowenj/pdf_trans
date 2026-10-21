@@ -15,7 +15,7 @@ from pdf_trans.errors import MinerUClientError
 
 DEFAULT_SVR_URL = "http://127.0.0.1:7100"
 DEFAULT_GPUSTACK_MODEL = "mineru4"
-POLL_INTERVAL_SECONDS = 2.0
+POLL_INTERVAL_SECONDS = 15.0
 TASK_TIMEOUT_SECONDS = 30 * 60
 LOGGER = logging.getLogger(__name__)
 
