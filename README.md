@@ -60,7 +60,8 @@ python3 -m pdf_trans /path/to/document.pdf \
 `/v1/parse/jobs`。解析请求固定使用 `standard` tier，
 `X-GPUStack-Model` 默认值为 `mineru4`。ZIP 如果只包含
 `structured_content.json`，程序会生成供后续流程使用的
-`structured_content_list.json`。如服务要求 Bearer 认证，设置
+`structured_content_list.json`；表格优先从同一结果包的 `middle_json.json`
+保留原始 HTML，没有对应 HTML 时才转换 Markdown 表格。如服务要求 Bearer 认证，设置
 `PDF_TRANS_MINERU_API_KEY`；它与翻译接口的 `TRANSLATION_API_KEY` 分开配置。
 
 如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
@@ -215,6 +216,18 @@ export PDF_TRANS_WEB_PORT="8000"
 - `PDF_TRANS_MINERU_API_KEY` 可选，配置后作为 Bearer Key 发送给 MinerU；
 - `PDF_TRANS_WEB_HOST` 默认 `127.0.0.1`；
 - `PDF_TRANS_WEB_PORT` 默认 `8000`。
+
+Web 首页右上角的「设置」进入 MinerU 设置页（`/settings`）。未保存手动设置时，
+解析任务使用上述 `PDF_TRANS_MINERU_*` 环境变量；保存后以数据库中的设置为准，
+服务重启后继续生效。点击「恢复环境配置」可清除手动设置。任务在开始时读取
+当前配置，后续任务使用最新设置。
+
+内网 GPUStack 可在设置页填写模型或路由名称，点击「探测实例」从运行中的实例
+读取 IP 和端口，再保存地址。探测使用 `TRANSLATION_BASE_URL` 和
+`TRANSLATION_API_KEY`，后者需有查看 GPUStack 模型实例的权限；探测失败时可
+手动填写 MinerU 地址。设置页的 MinerU API Key 用于直接请求 MinerU，默认
+读取 `PDF_TRANS_MINERU_API_KEY`，不会在页面中回显。探测和连接测试都不会
+自动保存设置。
 
 项目仍通过普通 HTTP 请求调用 `/chat/completions`。显式配置思考开关时，请求体
 顶层增加 `chat_template_kwargs.enable_thinking`；未配置时请求体保持原样。

@@ -7,6 +7,7 @@ import pytest
 from pdf_trans import archive as mineru_archive
 from pdf_trans.archive import extract_zip, find_content_list
 from pdf_trans.errors import ArchiveError
+from pdf_trans.formula_scanner import scan_content_list
 
 
 def make_zip(files: dict[str, bytes]) -> bytes:
@@ -79,6 +80,50 @@ def test_resolve_content_list_converts_v1_structured_content(tmp_path):
          "image_footnote": [], "img_path": "images/seal.jpg"},
     ]
     assert (content_path.parent / "images/seal.jpg").read_bytes() == b"image"
+
+
+def test_resolve_content_list_converts_markdown_table_for_formula_audit(tmp_path):
+    archive_bytes = make_zip({
+        "structured_content.json": json.dumps({"pages": [{
+            "page_idx": 7,
+            "blocks": [{
+                "type": "table",
+                "content": "| Material | Value |\n| --- | --- |\n| A \\| B | $x$ &amp; 2 |",
+                "image_source": "images/table.jpg",
+            }],
+        }]}).encode(),
+    })
+    extracted = extract_zip(archive_bytes, tmp_path / "data")
+
+    content_path = mineru_archive.resolve_content_list(extracted)
+    items = json.loads(content_path.read_text())
+
+    assert items[0]["table_body"].startswith("<table>")
+    assert "A | B" in items[0]["table_body"]
+    assert [formula.raw_formula for formula in scan_content_list(items)] == ["$x$"]
+
+
+def test_resolve_content_list_prefers_matching_middle_json_table_html(tmp_path):
+    html = '<table><tr><td rowspan="2">A</td><td>$x$</td></tr></table>'
+    archive_bytes = make_zip({
+        "result/structured_content.json": json.dumps({"pages": [{
+            "page_idx": 7,
+            "blocks": [{"type": "table", "bbox": [1, 2, 3, 4],
+                        "content": "| A | $x$ |\n| --- | --- |"}],
+        }]}).encode(),
+        "result/middle_json.json": json.dumps({"pages": [{
+            "page_idx": 7,
+            "blocks": [{"type": "table", "bbox": [1, 2, 3, 4],
+                        "content": [{"type": "table_body", "content": html}]}],
+        }]}).encode(),
+    })
+    extracted = extract_zip(archive_bytes, tmp_path / "data")
+
+    content_path = mineru_archive.resolve_content_list(extracted)
+    items = json.loads(content_path.read_text())
+
+    assert items[0]["table_body"] == html
+    assert [formula.raw_formula for formula in scan_content_list(items)] == ["$x$"]
 
 
 @pytest.mark.parametrize("unsafe_name", ["../escape.json", "/absolute.json"])

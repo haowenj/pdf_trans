@@ -14,6 +14,16 @@ class Base(DeclarativeBase):
     pass
 
 
+class ApplicationSetting(Base):
+    __tablename__ = "application_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class Task(Base):
     __tablename__ = "tasks"
     __table_args__ = (

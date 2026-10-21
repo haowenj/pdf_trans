@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>设置 · PDF Trans</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar"><strong>PDF Trans · 设置</strong><a href="/">返回首页</a></header>
+  <main class="settings-shell">
+    <h1>设置</h1>
+    <p class="settings-intro">保存后用于后续解析任务，服务重启后仍然有效。</p>
+    {% if error %}<p class="settings-feedback failure" role="alert">{{ error }}</p>{% endif %}
+    {% if request.query_params.get('saved') == '1' %}<p class="settings-feedback success" role="status">MinerU 设置已保存。</p>{% endif %}
+    {% if request.query_params.get('reset') == '1' %}<p class="settings-feedback success" role="status">已恢复环境配置。</p>{% endif %}
+    <section class="settings-card" aria-labelledby="mineru-title">
+      <div class="settings-heading"><h2 id="mineru-title">MinerU</h2><span class="settings-badge">{{ '使用手动配置' if mineru.is_overridden else '使用环境配置' }}</span></div>
+      <form id="mineru-form" action="/settings/mineru" method="post">
+        <div class="settings-field">
+          <label for="translation-base-url">GPUStack 地址</label>
+          <input id="translation-base-url" value="{{ translation_base_url }}" readonly placeholder="尚未配置 TRANSLATION_BASE_URL">
+          <p>从现有翻译配置读取；探测需要 GPUStack 管理员权限。{{ '已配置' if translation_key_ready else '未配置' }} TRANSLATION_API_KEY。</p>
+        </div>
+        <div class="settings-field">
+          <label for="gpustack-model">MinerU 模型 / 路由名称</label>
+          <div class="settings-input-action"><input id="gpustack-model" name="gpustack_model" value="{{ mineru.gpustack_model }}"><button id="probe-mineru" type="button">探测实例</button></div>
+          <p>探测运行中的 GPUStack 实例 IP 和端口；失败时可手动填写地址。</p>
+        </div>
+        <div class="settings-field">
+          <label for="mineru-url">MinerU 服务地址</label>
+          <div class="settings-input-action"><input id="mineru-url" name="url" type="url" value="{{ mineru.url }}" required><button id="test-mineru" type="button">测试连接</button></div>
+          <p>例如 http://10.180.42.193:40005。探测和测试不会自动保存。</p>
+        </div>
+        <div class="settings-field">
+          <label for="mineru-key">MinerU API Key</label>
+          <input id="mineru-key" name="api_key" type="password" autocomplete="new-password" placeholder="{{ '已配置，留空保持不变' if mineru.has_api_key else '可选，留空使用环境变量' }}">
+          <p>直连 MinerU 时使用；默认读取 PDF_TRANS_MINERU_API_KEY。探测实例单独使用 TRANSLATION_API_KEY。</p>
+        </div>
+        <p id="mineru-feedback" class="settings-feedback" role="status" aria-live="polite" hidden></p>
+        <button class="primary" type="submit">保存设置</button>
+      </form>
+      <form action="/settings/mineru/reset" method="post" class="settings-reset">
+        <button type="submit">恢复环境配置</button>
+        <p>清除手动设置，重新使用 PDF_TRANS_MINERU_* 环境变量。</p>
+      </form>
+    </section>
+  </main>
+  <script src="/static/settings.js" defer></script>
+</body>
+</html>

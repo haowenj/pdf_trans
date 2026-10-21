@@ -9,10 +9,12 @@ from fastapi.staticfiles import StaticFiles
 
 from pdf_trans.web.config import WebSettings
 from pdf_trans.web.db import make_engine, make_session_factory, run_migrations
+from pdf_trans.web.mineru_settings import MinerUSettingsRepository
 from pdf_trans.web.repository import TaskRepository
 from pdf_trans.web.routes.files import router as files_router
 from pdf_trans.web.routes.logs import router as logs_router
 from pdf_trans.web.routes.pages import router as pages_router
+from pdf_trans.web.routes.settings import router as settings_router
 from pdf_trans.web.routes.tasks import router as tasks_router
 from pdf_trans.web.task_logging import TaskLogHandler
 from pdf_trans.web.task_runner import TaskRunner
@@ -31,6 +33,7 @@ def create_app(
         engine = make_engine(settings.database_url)
         run_migrations(engine)
         repository = TaskRepository(make_session_factory(engine))
+    mineru_settings = MinerUSettingsRepository(repository.sessions, settings)
     task_log_handler = (
         None
         if worker is not None
@@ -39,7 +42,7 @@ def create_app(
     if worker is None:
         worker = TaskWorker(
             repository,
-            TaskRunner(settings),
+            TaskRunner(settings, mineru_settings=mineru_settings.get),
             task_log_handler,
         )
 
@@ -61,6 +64,7 @@ def create_app(
     app = FastAPI(title="PDF Trans", lifespan=lifespan)
     app.state.settings = settings
     app.state.repository = repository
+    app.state.mineru_settings = mineru_settings
     app.state.worker = worker
     app.mount(
         "/static",
@@ -71,6 +75,7 @@ def create_app(
         name="static",
     )
     app.include_router(pages_router)
+    app.include_router(settings_router)
     app.include_router(files_router)
     app.include_router(tasks_router)
     app.include_router(logs_router)

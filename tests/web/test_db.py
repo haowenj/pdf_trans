@@ -7,7 +7,7 @@ from pdf_trans.web.db import (
     make_session_factory,
     run_migrations,
 )
-from pdf_trans.web.models import Task, TaskLog
+from pdf_trans.web.models import ApplicationSetting, Task, TaskLog
 
 
 def test_migration_creates_portable_task_tables(tmp_path) -> None:
@@ -20,6 +20,7 @@ def test_migration_creates_portable_task_tables(tmp_path) -> None:
         "alembic_version",
         "tasks",
         "task_logs",
+        "application_settings",
     }
     task_columns = {
         column["name"]: column for column in inspector.get_columns("tasks")
@@ -70,8 +71,12 @@ def test_task_schema_compiles_for_mysql_without_native_enum_or_json() -> None:
     log_ddl = str(
         CreateTable(TaskLog.__table__).compile(dialect=mysql.dialect())
     ).upper()
+    setting_ddl = str(
+        CreateTable(ApplicationSetting.__table__).compile(dialect=mysql.dialect())
+    ).upper()
 
     assert "CREATE TABLE TASKS" in task_ddl
     assert "CREATE TABLE TASK_LOGS" in log_ddl
+    assert "CREATE TABLE APPLICATION_SETTINGS" in setting_ddl
     assert "ENUM" not in task_ddl
     assert "JSON" not in task_ddl + log_ddl

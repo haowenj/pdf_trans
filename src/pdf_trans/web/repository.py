@@ -78,6 +78,10 @@ class TaskRepository:
     def __init__(self, sessions: sessionmaker[Session]) -> None:
         self._sessions = sessions
 
+    @property
+    def sessions(self) -> sessionmaker[Session]:
+        return self._sessions
+
     def create_task(
         self,
         task_id: str,

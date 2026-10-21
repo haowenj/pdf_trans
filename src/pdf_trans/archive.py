@@ -7,7 +7,12 @@ from shutil import copyfileobj
 from typing import Iterable
 from zipfile import BadZipFile, ZipFile
 
+from markdown_it import MarkdownIt
+
 from pdf_trans.errors import ArchiveError
+
+
+_TABLE_MARKDOWN = MarkdownIt("commonmark", {"html": False}).enable("table")
 
 
 def extract_zip(
@@ -78,7 +83,61 @@ def _annotation_texts(value: object) -> list[str]:
     ]
 
 
-def _structured_items(source: Path) -> list[dict[str, object]]:
+def _structured_table_body(content: str, *, page_idx: int, block_idx: int) -> str:
+    body = content.strip()
+    if "<table" in body.lower():
+        return body
+    html = _TABLE_MARKDOWN.render(body).strip()
+    if not (html.startswith("<table>") and html.endswith("</table>")):
+        raise ArchiveError(
+            f"MinerU 第 {page_idx} 页第 {block_idx} 个表格既不是 HTML，也不是有效 Markdown 表格"
+        )
+    return html
+
+
+def _middle_pages(source: Path | None) -> dict[int, dict]:
+    if source is None:
+        return {}
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ArchiveError(f"无法读取 MinerU middle JSON：{exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("pages"), list):
+        raise ArchiveError("MinerU middle JSON 缺少 pages")
+    return {
+        page.get("page_idx", index): page
+        for index, page in enumerate(payload["pages"])
+        if isinstance(page, dict) and type(page.get("page_idx", index)) is int
+    }
+
+
+def _middle_table_html(
+    page: dict | None, block_idx: int, block: dict
+) -> str | None:
+    blocks = page.get("blocks") if isinstance(page, dict) else None
+    if not isinstance(blocks, list) or block_idx >= len(blocks):
+        return None
+    detail = blocks[block_idx]
+    if (
+        not isinstance(detail, dict)
+        or detail.get("type") != "table"
+        or detail.get("bbox") != block.get("bbox")
+    ):
+        return None
+    spans = detail.get("content")
+    if not isinstance(spans, list):
+        return None
+    for span in spans:
+        if isinstance(span, dict) and span.get("type") == "table_body":
+            html = span.get("content")
+            if isinstance(html, str) and "<table" in html.lower():
+                return html.strip()
+    return None
+
+
+def _structured_items(
+    source: Path, middle_path: Path | None = None
+) -> list[dict[str, object]]:
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -86,6 +145,7 @@ def _structured_items(source: Path) -> list[dict[str, object]]:
     if not isinstance(payload, dict) or not isinstance(payload.get("pages"), list):
         raise ArchiveError("MinerU structured content 缺少 pages")
 
+    middle_by_page = _middle_pages(middle_path)
     items: list[dict[str, object]] = []
     for fallback_page_idx, page in enumerate(payload["pages"]):
         if not isinstance(page, dict):
@@ -96,7 +156,8 @@ def _structured_items(source: Path) -> list[dict[str, object]]:
         blocks = page.get("blocks")
         if not isinstance(blocks, list):
             continue
-        for block in blocks:
+        middle_page = middle_by_page.get(page_idx)
+        for block_idx, block in enumerate(blocks):
             if not isinstance(block, dict):
                 continue
             block_type = block.get("type")
@@ -109,7 +170,12 @@ def _structured_items(source: Path) -> list[dict[str, object]]:
             if block_type == "table":
                 item["type"] = "table"
                 if isinstance(content, str) and content.strip():
-                    item["table_body"] = content.strip()
+                    body = content.strip()
+                    if "<table" not in body.lower():
+                        body = _middle_table_html(middle_page, block_idx, block) or body
+                    item["table_body"] = _structured_table_body(
+                        body, page_idx=page_idx, block_idx=block_idx
+                    )
                 item["table_caption"] = _annotation_texts(block.get("captions"))
                 item["table_footnote"] = _annotation_texts(block.get("footnotes"))
             elif block_type in {"image", "chart"}:
@@ -162,7 +228,10 @@ def resolve_content_list(extracted_paths: Iterable[Path]) -> Path:
     target = structured[0].with_name("structured_content_list.json")
     if target.exists():
         raise ArchiveError(f"MinerU content list 目标文件已存在：{target}")
-    items = _structured_items(structured[0])
+    middle_path = structured[0].with_name("middle_json.json")
+    items = _structured_items(
+        structured[0], middle_path if middle_path in paths else None
+    )
     try:
         target.write_text(json.dumps(items, ensure_ascii=False, indent=2) + "\n",
                           encoding="utf-8")

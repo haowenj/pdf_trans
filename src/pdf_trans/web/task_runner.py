@@ -22,6 +22,7 @@ from pdf_trans.workflow import (
     process_translation_file,
 )
 from pdf_trans.web.config import WebSettings
+from pdf_trans.web.mineru_connection import MinerUConnection
 from pdf_trans.web.repository import TaskView
 from pdf_trans.web.storage import resolve_stored_path
 
@@ -80,8 +81,16 @@ class TaskRunner:
         self,
         settings: WebSettings,
         services: WorkflowServices | None = None,
+        mineru_settings: Callable[[], MinerUConnection] | None = None,
     ) -> None:
         self.settings = settings
+        self.mineru_settings = mineru_settings or (
+            lambda: MinerUConnection(
+                url=settings.mineru_url,
+                gpustack_model=settings.mineru_gpustack_model,
+                api_key=settings.mineru_api_key,
+            )
+        )
         self.services = services or WorkflowServices(
             process_pdf,
             process_translation_file,
@@ -118,11 +127,12 @@ class TaskRunner:
             self.settings.data_dir, task.source_pdf_path
         )
         attempt_dir = task_root / "attempts" / str(task.attempt_count)
+        mineru = self.mineru_settings()
         result = self.services.process_pdf(
             source,
-            svr_url=self.settings.mineru_url,
-            mineru_gpustack_model=self.settings.mineru_gpustack_model,
-            mineru_api_key=self.settings.mineru_api_key,
+            svr_url=mineru.url,
+            mineru_gpustack_model=mineru.gpustack_model,
+            mineru_api_key=mineru.api_key,
             data_dir=attempt_dir,
         )
         summary = (

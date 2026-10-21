@@ -7,6 +7,7 @@ from pdf_trans.errors import FormulaAuditError
 from pdf_trans.formula_audit import LegacyFormulaAuditError
 from pdf_trans.translation import TranslationStats
 from pdf_trans.web.config import WebSettings
+from pdf_trans.web.mineru_connection import MinerUConnection
 from pdf_trans.web.repository import TaskView
 from pdf_trans.web.task_runner import (
     AmbiguousCheckpoint,
@@ -160,6 +161,21 @@ def test_runner_starts_full_workflow_when_no_checkpoint_exists(tmp_path):
     assert "总数：3" in result.summary
     assert "跳过已有成功：1" in result.summary
     assert "模型调用总数：7（正文 2，表格 2，附属文本 3）" in result.summary
+
+    (tmp_path / result.normalized_path).unlink()
+    configured = TaskRunner(
+        settings(tmp_path),
+        WorkflowServices(full, lambda path: None, lambda source, output: None),
+        mineru_settings=lambda: MinerUConnection(
+            url="http://10.0.0.8:40005",
+            gpustack_model="mineru-route",
+            api_key="new-key",
+        ),
+    )
+    configured.run(task_view(attempt_count=2))
+    assert received["svr_url"] == "http://10.0.0.8:40005"
+    assert received["mineru_gpustack_model"] == "mineru-route"
+    assert received["mineru_api_key"] == "new-key"
 
 
 def test_runner_resumes_translation_and_renders_markdown(tmp_path):
