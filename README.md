@@ -1,7 +1,7 @@
 # PDF Trans
 
-上传一个 PDF 到 MinerU 4 异步接口，下载解析结果，清洗并逐对象翻译 content
-list。项目同时提供命令行模式和单进程 Web 面板模式。
+通过 Web 面板上传 PDF 到 MinerU 4 异步接口，下载解析结果，清洗并逐对象翻译
+content list。
 
 ## 环境
 
@@ -11,17 +11,11 @@ list。项目同时提供命令行模式和单进程 Web 面板模式。
 
 ## 安装
 
-命令行：
+安装 Web 面板：
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python3 -m pip install -e .
-```
-
-Web 面板：
-
-```bash
 python3 -m pip install -e '.[web]'
 ```
 
@@ -34,55 +28,14 @@ export PDF_TRANS_DATABASE_URL='mysql+pymysql://user:password@127.0.0.1/pdf_trans
 
 MySQL 数据库需要预先创建好；Web 服务启动时会自动运行 Alembic 迁移。
 
-## 命令行使用
-
-```bash
-python3 -m pdf_trans /path/to/document.pdf
-# 任务 UUID：12345678-1234-4abc-8def-1234567890ab
-```
-
-连接其他地址的 MinerU：
-
-```bash
-python3 -m pdf_trans /path/to/document.pdf \
-  --svr-url http://mineru.example:7100
-```
-
-如果 MinerU 4 服务使用其他 GPUStack 模型或路由名称，可指定：
-
-```bash
-python3 -m pdf_trans /path/to/document.pdf \
-  --mineru-gpustack-model mineru-custom
-```
-
-`--svr-url` 是 MinerU 4 API 的基础地址，可包含反向代理路径前缀；
-`PDF_TRANS_MINERU_URL` 可设置默认地址。客户端直接使用 `/v1/uploads` 和
+`PDF_TRANS_MINERU_URL` 可设置 MinerU 4 API 的基础地址，也可在页面设置中指定；
+客户端直接使用 `/v1/uploads` 和
 `/v1/parse/jobs`。解析请求固定使用 `standard` tier，
 `X-GPUStack-Model` 默认值为 `mineru4`。ZIP 如果只包含
 `structured_content.json`，程序会生成供后续流程使用的
 `structured_content_list.json`；表格优先从同一结果包的 `middle_json.json`
 保留原始 HTML，没有对应 HTML 时才转换 Markdown 表格。如服务要求 Bearer 认证，设置
 `PDF_TRANS_MINERU_API_KEY`；它与翻译接口的 `TRANSLATION_API_KEY` 分开配置。
-
-如果 MinerU 流程已经完成，也可以只从规范化文件继续翻译：
-
-```bash
-python3 -m pdf_trans --translate-only \
-  /path/to/normalized_content_list.json
-```
-
-每次 CLI 执行（包括 `--translate-only`）都会输出一个完整任务 UUID。使用 CLI 或 Web
-面板生成的完整任务 UUID，都可以通过下列命令查看对应任务的诊断产物；加上 `--zip`
-可在当前目录打包：
-
-```bash
-python3 -m pdf_trans cat_task \
-  12345678-1234-4abc-8def-1234567890ab
-python3 -m pdf_trans cat_task \
-  12345678-1234-4abc-8def-1234567890ab --zip
-```
-
-ZIP 名称为 `pdf-trans-<uuid>.zip`；如果当前目录已有同名文件，命令会拒绝覆盖。
 
 ## Web 面板使用
 
@@ -249,19 +202,6 @@ content_list.json
   -> rendered.md
 ```
 
-CLI 每次完整解析都会生成独立 UUID 运行目录，避免同名 PDF 覆盖彼此的解析产物：
-
-```text
-data/runs/cli-<uuid>/
-  task.json
-  task.log
-  mineru_result.zip
-  <mineru-archive-layout>/...
-```
-
-`task.json` 记录任务状态和产物引用，`task.log` 保存无终端颜色的完整流程日志，
-`mineru_result.zip` 是 MinerU 返回、尚未解压的原始结果包。
-
 ### 公式审计
 
 完整 Web 工作流在 MinerU 解压并定位原始 `*_content_list.json` 后、清洗和翻译前生成
@@ -287,11 +227,7 @@ rejected 数量以及逐公式修复明细。
 任务仍会在翻译前失败。页面继续任务时会复用有效 schema v2；有效 schema v1 会从
 原始 MinerU content list 原子重建为 v2，损坏的 v2 不会被静默覆盖。
 
-`--translate-only` 同样会生成 `data/runs/cli-<uuid>/` 下的 `task.json` 和
-`task.log`，但翻译文件和 Markdown 仍写在指定的
-`normalized_content_list.json` 旁；清单只引用这次明确使用或生成的三个文件。
-
-Web 面板继续按任务 UUID 和执行次数隔离，例如：
+Web 面板按任务 UUID 和执行次数隔离，例如：
 
 ```text
 data/web/tasks/<task-id>/
@@ -305,23 +241,7 @@ data/web/tasks/<task-id>/
     ...
 ```
 
-命令行最终统计会输出处理前数量、过滤数量、处理后数量、清洗统计、Markdown 路径、
-跨页候选数量、规范化文件路径，以及翻译统计和翻译文件路径。Web 面板会把这些流程
-日志写入 Console 和任务目录，并把成功产物关联到对应任务。
-
-### 任务诊断
-
-`cat_task` 可按同一个纯 UUID 定位新旧 CLI 任务或 Web 任务，列出相对路径和文件大小。
-Web 任务会包含全部 `attempts/`；旧 Web 任务如果还没有 `task.log`，命令会尝试从
-数据库导出日志。正在执行的任务也可以查看和打包，但结果只是当时的文件快照。
-
-诊断列表和 ZIP 不包含上传的原始 PDF，也不会跟随符号链接。CLI
-`--translate-only` 的外部产物只按 `task.json` 中记录的精确文件加入，不会递归打包
-它们所在的整个目录。
-
-检查 Web 任务时，运行命令的环境必须使用与 Web 部署相同的
-`PDF_TRANS_WEB_DATA_DIR` 和 `PDF_TRANS_DATABASE_URL`。数据库暂时不可用时，命令仍会
-收集文件系统中的产物并给出警告。
+Web 面板会把流程日志写入 Console 和任务目录，并把成功产物关联到对应任务。
 
 ## 翻译行为
 
