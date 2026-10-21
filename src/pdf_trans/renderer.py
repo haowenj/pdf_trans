@@ -145,6 +145,12 @@ def _render_item(
             return []
         if replacements:
             text = replace_equation_formula(text, replacements)
+        stripped = text.strip()
+        if not any(
+            stripped.startswith(opening) and stripped.endswith(closing)
+            for opening, closing in (("$$", "$$"), ("\\[", "\\]"))
+        ):
+            text = f"$$\n{stripped}\n$$"
         return [text]
 
     return []

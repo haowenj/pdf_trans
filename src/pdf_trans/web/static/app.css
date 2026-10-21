@@ -384,6 +384,13 @@ small {
   background: #f8fafc;
 }
 
+@media screen {
+  .reader-article .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+}
+
 @media print {
   @page {
     size: A4;

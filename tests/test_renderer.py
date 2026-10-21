@@ -5,7 +5,43 @@ from types import SimpleNamespace
 import pytest
 
 from pdf_trans.errors import ContentListError
+from pdf_trans.formula_scanner import scan_formula_spans
 from pdf_trans.renderer import render_content_list_file, render_items
+from pdf_trans.web.markdown import render_safe_markdown
+
+
+def test_render_bare_equation_preserves_latex_through_markdown():
+    formula = r"\begin{array}{l} FIC_{1} = \frac{x}{100} \\ FIC_{2} = y \end{array}"
+
+    rendered = render_items([{"type": "equation", "text": formula}])
+    spans = scan_formula_spans(rendered)
+
+    assert len(spans) == 1
+    assert spans[0].is_block
+    assert spans[0].katex_formula.strip() == formula
+    html = render_safe_markdown(rendered, asset_base_url="/assets")
+    assert formula in html
+    assert "<em>" not in html
+
+
+@pytest.mark.parametrize("formula", ["$$\nx_1 = y\n$$", r"\[x_1 = y\]"])
+def test_render_delimited_equation_does_not_add_another_wrapper(formula):
+    assert render_items([{"type": "equation", "text": formula}]) == formula + "\n"
+
+
+def test_render_bare_equation_applies_existing_replacement_before_wrapping():
+    raw = "F I C 0 0 1 2"
+    normalized = r"\mathrm{FIC0012}"
+    report = SimpleNamespace(accepted_replacements={(raw, True): normalized})
+
+    rendered = render_items(
+        [{"type": "equation", "text": raw}], formula_audit=report
+    )
+
+    spans = scan_formula_spans(rendered)
+    assert len(spans) == 1
+    assert spans[0].is_block
+    assert spans[0].katex_formula.strip() == normalized
 
 
 def test_render_items_renders_supported_types_in_order_without_mutation():
